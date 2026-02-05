@@ -1,0 +1,163 @@
+/* FILE: ~/gate-frontend/src/dashboard.css */
+.dashWrap {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 26px 18px 60px;
+}
+
+.tile {
+  padding: 10px 0;
+}
+
+.sep {
+  border: 0;
+  border-top: 1px solid rgba(0,0,0,0.08);
+  margin: 18px 0;
+}
+
+.tileHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.tile h2 {
+  margin: 0 0 10px;
+  font-size: 18px;
+}
+
+.modeRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.segBtn {
+  border: 1px solid rgba(0,0,0,0.15);
+  background: white;
+  padding: 7px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.segBtn.active {
+  background: rgba(0,0,0,0.08);
+}
+
+.sel {
+  border: 1px solid rgba(0,0,0,0.15);
+  background: white;
+  padding: 7px 10px;
+  border-radius: 10px;
+}
+
+.topGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+@media (max-width: 860px) {
+  .topGrid { grid-template-columns: 1fr; }
+  .tileHeader { flex-direction: column; align-items: flex-start; }
+}
+
+.card {
+  border: 1px solid rgba(0,0,0,0.10);
+  border-radius: 14px;
+  padding: 14px;
+  background: white;
+}
+
+.cardTitle {
+  font-size: 14px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.naBox {
+  border: 1px dashed rgba(0,0,0,0.25);
+  border-radius: 12px;
+  padding: 22px;
+  text-align: center;
+  opacity: 0.75;
+}
+
+.mini {
+  margin-top: 10px;
+  font-size: 13px;
+  opacity: 0.85;
+  display: grid;
+  gap: 4px;
+}
+
+.avgGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-top: 10px;
+}
+@media (max-width: 640px) {
+  .avgGrid { grid-template-columns: 1fr; }
+}
+
+.avgItem {
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 12px;
+  padding: 12px;
+}
+.avgLabel {
+  font-size: 12px;
+  opacity: 0.7;
+}
+.avgValue {
+  font-size: 20px;
+  font-weight: 900;
+  margin-top: 6px;
+}
+
+.startRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.primaryBtn {
+  border: 0;
+  background: rgba(0,0,0,0.85);
+  color: white;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.hint {
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+.histList {
+  display: grid;
+  gap: 10px;
+}
+
+.histItem {
+  border: 1px solid rgba(0,0,0,0.10);
+  border-radius: 12px;
+  padding: 12px;
+  background: white;
+}
+
+.histTop {
+  font-size: 14px;
+}
+.histBottom {
+  font-size: 12px;
+  opacity: 0.75;
+  margin-top: 4px;
+}
+.dot { opacity: 0.5; margin: 0 8px; }

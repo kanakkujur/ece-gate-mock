@@ -1,0 +1,26 @@
+{
+  "name": "gate-backend",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "openai": "^6.17.0",
+    "pg": "^8.18.0"
+  },
+  "type": "module",
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  }
+}
