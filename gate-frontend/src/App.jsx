@@ -23,7 +23,7 @@ export default function App() {
 
   // exam state
   const [examQuestions, setExamQuestions] = useState([]);
-  const [examMeta, setExamMeta] = useState({ mode: "main", subject: "EC" });
+  const [examMeta, setExamMeta] = useState({ mode: "main", subject: "MAIN" });
 
   const isAuthed = !!token;
 
@@ -39,7 +39,7 @@ export default function App() {
       try {
         const data = await apiFetch("/test/history", { token });
         setHistory(Array.isArray(data) ? data : []);
-      } catch (e) {
+      } catch {
         setHistory([]);
       } finally {
         setLoadingHistory(false);
@@ -66,9 +66,7 @@ export default function App() {
 
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           {isAuthed && (
-            <span style={{ opacity: 0.75, fontSize: 13 }}>
-              {email || "—"}
-            </span>
+            <span style={{ opacity: 0.75, fontSize: 13 }}>{email || "—"}</span>
           )}
 
           {isAuthed ? (
@@ -76,13 +74,12 @@ export default function App() {
               <button
                 onClick={async () => {
                   try {
-                    // Toggle OFF if already visible
+                    // toggle OFF
                     if (blueprint !== null) {
                       setBlueprint(null);
                       return;
                     }
-
-                    // Toggle ON (fetch fresh)
+                    // toggle ON (fetch)
                     const data = await apiFetch("/ai/blueprint?mode=main", { token });
                     setBlueprint(data);
                   } catch (e) {
@@ -127,32 +124,33 @@ export default function App() {
     );
   }, [isAuthed, email, clearSession, token, blueprint]);
 
-  // Start MAIN: 65 questions, backend will do GA+EC split (your backend logic)
+  // ✅ MAIN: do NOT send subjects=EC (DB doesn't have subject "EC")
   async function onStartMain() {
     try {
-      const data = await apiFetch(`/test/generate?count=65&subjects=EC`, {
-        token,
-      });
+      const data = await apiFetch(`/test/generate?count=65`, { token });
+      const qs = Array.isArray(data?.questions) ? data.questions : [];
+      if (!qs.length) throw new Error("No questions returned");
 
-      setExamQuestions(data?.questions || []);
-      setExamMeta({ mode: "main", subject: "EC" });
+      setExamQuestions(qs);
+      setExamMeta({ mode: "main", subject: "MAIN" });
       setScreen("exam");
     } catch (e) {
       alert(e?.message || "Failed to start test");
     }
   }
 
-  // Start SUBJECT-WISE: still 65 questions, but only from selected subject (you said logic differs)
-  // NOTE: adjust query param mapping later if you decide to send a real subject code list.
+  // SUBJECT-WISE: send the exact DB subject string (Networks, Digital Electronics, etc)
   async function onStartSubject(subject) {
     try {
-      const subj = subject || "EC";
+      const subj = subject || "Networks";
       const data = await apiFetch(
         `/test/generate?count=65&subjects=${encodeURIComponent(subj)}`,
         { token }
       );
+      const qs = Array.isArray(data?.questions) ? data.questions : [];
+      if (!qs.length) throw new Error("No questions returned");
 
-      setExamQuestions(data?.questions || []);
+      setExamQuestions(qs);
       setExamMeta({ mode: "subject", subject: subj });
       setScreen("exam");
     } catch (e) {
@@ -161,7 +159,6 @@ export default function App() {
   }
 
   async function onExamSubmit({ score, accuracy, answers, totalQuestions }) {
-    // Exam.jsx can call this when user submits.
     try {
       await apiFetch("/test/submit", {
         token,
@@ -169,7 +166,6 @@ export default function App() {
         body: { score, accuracy, answers, totalQuestions },
       });
 
-      // refresh history
       const data = await apiFetch("/test/history", { token });
       setHistory(Array.isArray(data) ? data : []);
 
