@@ -8,6 +8,8 @@ import Exam from "./Exam.jsx";
 import "./dashboard.css";
 
 export default function App() {
+  const [blueprint, setBlueprint] = useState(null);
+
   const token = useAuthStore((s) => s.token);
   const email = useAuthStore((s) => s.email);
   const clearSession = useAuthStore((s) => s.clearSession);
@@ -70,28 +72,60 @@ export default function App() {
           )}
 
           {isAuthed ? (
-            <button
-              onClick={() => {
-                clearSession();
-                setScreen("dashboard");
-              }}
-              style={{
-                padding: "7px 10px",
-                borderRadius: 10,
-                border: "1px solid rgba(0,0,0,0.15)",
-                background: "white",
-                cursor: "pointer",
-                fontWeight: 700,
-              }}
-              type="button"
-            >
-              Logout
-            </button>
+            <>
+              <button
+                onClick={async () => {
+                  try {
+                    // Toggle OFF if already visible
+                    if (blueprint !== null) {
+                      setBlueprint(null);
+                      return;
+                    }
+
+                    // Toggle ON (fetch fresh)
+                    const data = await apiFetch("/ai/blueprint?mode=main", { token });
+                    setBlueprint(data);
+                  } catch (e) {
+                    alert(e?.message || "Failed to load blueprint");
+                  }
+                }}
+                style={{
+                  padding: "7px 10px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(0,0,0,0.15)",
+                  background: "white",
+                  cursor: "pointer",
+                  fontWeight: 700,
+                }}
+                type="button"
+              >
+                {blueprint ? "Hide Blueprint" : "Blueprint"}
+              </button>
+
+              <button
+                onClick={() => {
+                  clearSession();
+                  setBlueprint(null);
+                  setScreen("dashboard");
+                }}
+                style={{
+                  padding: "7px 10px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(0,0,0,0.15)",
+                  background: "white",
+                  cursor: "pointer",
+                  fontWeight: 700,
+                }}
+                type="button"
+              >
+                Logout
+              </button>
+            </>
           ) : null}
         </div>
       </div>
     );
-  }, [isAuthed, email, clearSession]);
+  }, [isAuthed, email, clearSession, token, blueprint]);
 
   // Start MAIN: 65 questions, backend will do GA+EC split (your backend logic)
   async function onStartMain() {
@@ -157,6 +191,23 @@ export default function App() {
   return (
     <div style={{ minHeight: "100vh", background: "white" }}>
       {topBar}
+
+      {screen === "dashboard" && blueprint && (
+        <pre
+          style={{
+            margin: "12px 18px 0",
+            padding: 12,
+            background: "#f6f7f8",
+            borderRadius: 12,
+            border: "1px solid rgba(0,0,0,0.08)",
+            overflow: "auto",
+            maxHeight: 260,
+            fontSize: 12,
+          }}
+        >
+          {JSON.stringify(blueprint, null, 2)}
+        </pre>
+      )}
 
       {screen === "dashboard" ? (
         <Dashboard
