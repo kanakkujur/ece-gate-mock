@@ -8,7 +8,7 @@ import pg from "pg";
 
 import { generateQuestions as generateOpenAIQuestions } from "./aiProviders/openai.js";
 import { generateQuestions as generateLocalQuestions } from "./aiProviders/local.js";
-import { buildMainPaperPlan } from "./src/randomizer.js"
+import { buildMainPaperPlan } from "./src/randomizer.js";
 
 const { Pool } = pg;
 const app = express();
@@ -221,8 +221,8 @@ app.get("/api/ai/blueprint", authMiddleware, async (req, res) => {
   const maxPerSubject = Math.max(minPerSubject, parseInt(req.query.maxPerSubject || "5", 10) || 5);
 
   const blueprint = buildMainPaperPlan({
-    minPerSubject: 1,
-    maxPerSubject: 5
+    minPerSubject,
+    maxPerSubject,
   });
 
   res.json(blueprint);
@@ -244,29 +244,11 @@ async function runProvider(provider, payload) {
   throw new Error("provider must be openai|local|auto");
 }
 
-/**
- * Body supports:
- * - provider: openai|local|auto
- * - mode: "subject" | "main"
- *
- * subject mode:
- *   { subject, topic, count }
- *
- * main mode:
- *   {
- *     mode:"main",
- *     blueprint?: (optional) { perSubject: {...}, GE:10, EC:55 ... }
- *     geTopic?: string (optional)
- *   }
- *
- * Returns JSON that you can save directly.
- */
 app.post("/api/ai/generate", authMiddleware, async (req, res) => {
   try {
     const provider = (req.body?.provider || DEFAULT_AI_PROVIDER).toLowerCase();
     const mode = (req.body?.mode || "subject").toLowerCase();
 
-    // cache key
     const cacheKey = JSON.stringify({
       provider,
       mode,
@@ -275,21 +257,21 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
     });
 
     const cached = cacheGet(cacheKey);
-    if (cached) {
-      return res.json({ ...cached, cached: true });
-    }
+    if (cached) return res.json({ ...cached, cached: true });
 
     // ---------- SUBJECT MODE ----------
     if (mode === "subject") {
       const { subject, topic, count = 5 } = req.body || {};
       if (!subject || !topic) return res.status(400).json({ error: "subject and topic are required" });
 
+      const n = Math.max(1, Math.min(parseInt(count, 10) || 5, 100));
+
       const payload = {
         mode: "subject",
         subject,
         topic,
-        count: Math.max(1, Math.min(parseInt(count, 10) || 5, 100)),
-        typeMix: defaultTypeMix(Math.max(1, Math.min(parseInt(count, 10) || 5, 100))),
+        count: n,
+        typeMix: defaultTypeMix(n),
       };
 
       const data = await runProvider(provider, payload);
@@ -309,8 +291,6 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
       const perSubject = blueprint?.perSubject || {};
       const geCount = blueprint?.GE ?? 10;
 
-      // 1) Generate GE questions
-      // (topic can be "Mixed" to keep it broad)
       const gePayload = {
         mode: "subject",
         subject: "General Aptitude",
@@ -319,13 +299,11 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
         typeMix: defaultTypeMix(geCount),
       };
 
-      // 2) Generate EC per subject (including EC_MIXED)
       const subjectPayloads = [];
       for (const [sub, cnt] of Object.entries(perSubject)) {
         const n = parseInt(cnt, 10) || 0;
         if (n <= 0) continue;
 
-        // EC_MIXED means: random EC topic bucket
         if (sub === "EC_MIXED") {
           subjectPayloads.push({
             mode: "subject",
@@ -345,18 +323,15 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
         }
       }
 
-      // run provider calls sequentially (safer for rate limits)
       const geOut = await runProvider(provider, gePayload);
       const ecOut = [];
       for (const p of subjectPayloads) {
         ecOut.push(await runProvider(provider, p));
       }
 
-      // Merge questions into a single paper list
       const all = [];
       const pushQuestions = (resp, sectionName) => {
         const qs = resp?.questions || resp?.data?.questions || resp?.result?.questions;
-        // If provider returns {questions:[...]} we use it. Otherwise accept resp.questions.
         if (Array.isArray(qs)) {
           for (const q of qs) all.push({ ...q, section: sectionName });
         } else if (Array.isArray(resp?.questions)) {
@@ -368,13 +343,10 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
 
       pushQuestions(geOut, "GE");
       for (const part of ecOut) {
-        // section name from payload subject if present
-        const sectionName =
-          part?.subject || part?.meta?.subject || "EC";
+        const sectionName = part?.subject || part?.meta?.subject || "EC";
         pushQuestions(part, sectionName);
       }
 
-      // final response
       const result = {
         provider,
         mode: "main",
@@ -431,18 +403,156 @@ app.get("/api/test/generate", authMiddleware, async (req, res) => {
   }
 });
 
+/* =========================================================
+   TEST SESSION HARDENING (STAGE 4)
+   POST /api/test/autosave
+   GET  /api/test/active
+   POST /api/test/submit (upgraded)
+========================================================= */
+
+app.get("/api/test/active", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+
+    const r = await pool.query(
+      `SELECT id, user_id, answers, remaining_time, is_submitted, mode, subject, totalquestions, created_at
+       FROM test_sessions
+       WHERE user_id = $1 AND is_submitted = false
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [userId]
+    );
+
+    return res.json(r.rows[0] || null);
+  } catch (e) {
+    console.error("Active session error:", e);
+    return res.status(500).json({ error: "Failed to load active session" });
+  }
+});
+
+app.post("/api/test/autosave", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+
+    const {
+      answers = {},
+      remainingTime = null,
+      mode = "main",
+      subject = null,
+      totalQuestions = 65,
+    } = req.body || {};
+
+    const active = await pool.query(
+      `SELECT id
+       FROM test_sessions
+       WHERE user_id = $1 AND is_submitted = false
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [userId]
+    );
+
+    if (active.rows.length) {
+      const sid = active.rows[0].id;
+
+      const upd = await pool.query(
+        `UPDATE test_sessions
+         SET answers = $2::jsonb,
+             remaining_time = $3,
+             mode = $4,
+             subject = $5,
+             totalquestions = COALESCE($6, totalquestions)
+         WHERE id = $1
+         RETURNING id`,
+        [sid, JSON.stringify(answers), remainingTime, mode, subject, totalQuestions]
+      );
+
+      return res.json({ ok: true, id: upd.rows[0].id, action: "updated" });
+    }
+
+    const ins = await pool.query(
+      `INSERT INTO test_sessions (user_id, answers, remaining_time, is_submitted, mode, subject, totalquestions, created_at)
+       VALUES ($1, $2::jsonb, $3, false, $4, $5, $6, now())
+       RETURNING id`,
+      [userId, JSON.stringify(answers), remainingTime, mode, subject, totalQuestions]
+    );
+
+    return res.json({ ok: true, id: ins.rows[0].id, action: "inserted" });
+  } catch (e) {
+    console.error("Autosave error:", e);
+    return res.status(500).json({ error: "Autosave failed" });
+  }
+});
+
 app.post("/api/test/submit", authMiddleware, async (req, res) => {
   try {
     const userId = req.user?.id;
-    const { score = null, accuracy = null, answers = {}, totalQuestions = null } = req.body || {};
 
-    await pool.query(
-      `INSERT INTO test_sessions (user_id, score, accuracy, answers, totalQuestions)
-       VALUES ($1,$2,$3,$4,$5)`,
-      [userId, score, accuracy, answers, totalQuestions]
+    const {
+      score = null,
+      accuracy = null,
+      answers = {},
+      totalQuestions = null,
+      mode = "main",
+      subject = null,
+      remainingTime = 0,
+    } = req.body || {};
+
+    const active = await pool.query(
+      `SELECT id
+       FROM test_sessions
+       WHERE user_id = $1 AND is_submitted = false
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [userId]
     );
 
-    res.json({ ok: true });
+    if (active.rows.length) {
+      const sid = active.rows[0].id;
+
+      const upd = await pool.query(
+        `UPDATE test_sessions
+         SET score = $2,
+             accuracy = $3,
+             answers = $4::jsonb,
+             totalquestions = COALESCE($5, totalquestions),
+             remaining_time = $6,
+             is_submitted = true,
+             mode = $7,
+             subject = $8
+         WHERE id = $1
+         RETURNING id`,
+        [
+          sid,
+          score,
+          accuracy,
+          JSON.stringify(answers),
+          totalQuestions,
+          remainingTime || 0,
+          mode,
+          subject,
+        ]
+      );
+
+      return res.json({ ok: true, id: upd.rows[0].id, action: "updated_active_submitted" });
+    }
+
+    const ins = await pool.query(
+      `INSERT INTO test_sessions (user_id, score, accuracy, answers, totalquestions, remaining_time, is_submitted, mode, subject, created_at)
+       VALUES ($1,$2,$3,$4::jsonb,$5,$6,true,$7,$8,now())
+       RETURNING id`,
+      [
+        userId,
+        score,
+        accuracy,
+        JSON.stringify(answers),
+        totalQuestions,
+        remainingTime || 0,
+        mode,
+        subject,
+      ]
+    );
+
+    return res.json({ ok: true, id: ins.rows[0].id, action: "inserted_submitted" });
   } catch (e) {
     console.error("Submit error:", e);
     res.status(500).json({ error: "Failed to submit test" });
@@ -453,7 +563,7 @@ app.get("/api/test/history", authMiddleware, async (req, res) => {
   try {
     const userId = req.user?.id;
     const r = await pool.query(
-      `SELECT id, user_id, score, accuracy, answers, totalQuestions, created_at
+      `SELECT id, user_id, score, accuracy, answers, totalquestions, mode, subject, remaining_time, is_submitted, created_at
        FROM test_sessions
        WHERE user_id=$1
        ORDER BY created_at DESC`,
