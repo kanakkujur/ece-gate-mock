@@ -1,4 +1,12 @@
 
 # secrets
 .env
+**/node_modules
 **/.env
+**/.env.*
+!.env.example
+dist
+build
+.vite
+.DS_Store
+

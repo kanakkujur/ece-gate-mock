@@ -580,6 +580,159 @@ app.get("/api/test/history", authMiddleware, async (req, res) => {
    Start
 ------------------------- */
 const PORT = process.env.PORT || 4000;
+
+/* =========================================================
+   QUESTIONS (Import AI-generated questions into DB)
+   POST /api/questions/import
+========================================================= */
+
+function sanitizeType(t) {
+  const x = String(t || "").toUpperCase();
+  if (x === "MCQ" || x === "MSQ" || x === "NAT") return x;
+  return "MCQ";
+}
+
+function asNum(v, def) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
+}
+
+function isPlainObject(x) {
+  return x && typeof x === "object" && !Array.isArray(x);
+}
+
+app.post("/api/questions/import", authMiddleware, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const questions = Array.isArray(body.questions) ? body.questions : [];
+
+    if (!questions.length) {
+      return res.status(400).json({ error: "questions[] is required" });
+    }
+    if (questions.length > 200) {
+      return res.status(400).json({ error: "Max 200 questions per import" });
+    }
+
+    // Normalize + validate
+    const rows = questions.map((q, idx) => {
+      const defaultSubject = String(body.defaultSubject || body.subject || "").trim();
+      const defaultTopic = String(body.defaultTopic || body.topic || "Mixed").trim();
+
+      const subject = String(q.subject || defaultSubject || "").trim();
+      const topic = String(q.topic || defaultTopic || "Mixed").trim();
+
+      const type = sanitizeType(q.type);
+
+      const question = String(q.question || "").trim();
+      const answer = q.answer == null ? "" : String(q.answer).trim();
+      const solution = String(q.solution || "").trim();
+
+      if (!subject) throw new Error(`Row ${idx + 1}: subject missing`);
+      if (!question) throw new Error(`Row ${idx + 1}: question missing`);
+
+      // options required for MCQ/MSQ, optional for NAT
+      let options = null;
+      if (type !== "NAT") {
+        if (!isPlainObject(q.options)) {
+          throw new Error(`Row ${idx + 1}: options object required for ${type}`);
+        }
+        options = q.options;
+      } else {
+        if (isPlainObject(q.options)) options = q.options;
+      }
+
+      const marks = asNum(q.marks, 1);
+      const neg_marks = asNum(q.neg_marks, 0.33);
+
+      const source = String(q.source || "AI").trim();
+
+      const year = q.year == null || q.year === "" ? null : Number(q.year);
+      const paper = q.paper == null ? null : String(q.paper);
+      const session = q.session == null ? null : String(q.session);
+      const question_number =
+        q.question_number == null || q.question_number === ""
+          ? null
+          : Number(q.question_number);
+
+      return {
+        subject,
+        topic,
+        type,
+        marks,
+        neg_marks,
+        question,
+        options, // JSON / null
+        answer,
+        solution,
+        source,
+        year,
+        paper,
+        session,
+        question_number,
+      };
+    });
+
+    // Build parameterized bulk insert
+    // columns must match your `questions` table columns
+    const cols = [
+      "subject",
+      "topic",
+      "type",
+      "marks",
+      "neg_marks",
+      "question",
+      "options",
+      "answer",
+      "solution",
+      "source",
+      "year",
+      "paper",
+      "session",
+      "question_number",
+    ];
+
+    const values = [];
+    const placeholders = rows.map((r, i) => {
+      const base = i * cols.length;
+      values.push(
+        r.subject,
+        r.topic,
+        r.type,
+        r.marks,
+        r.neg_marks,
+        r.question,
+        r.options ? JSON.stringify(r.options) : null,
+        r.answer,
+        r.solution,
+        r.source,
+        r.year,
+        r.paper,
+        r.session,
+        r.question_number
+      );
+
+      const ph = cols.map((_, j) => `$${base + j + 1}`);
+      // options must be cast to jsonb if your column is jsonb
+      // (works either way; safe to cast)
+      ph[6] = `${ph[6]}::jsonb`;
+      return `(${ph.join(",")})`;
+    });
+
+    const sql = `
+      INSERT INTO questions (${cols.join(",")})
+      VALUES ${placeholders.join(",")}
+      RETURNING id
+    `;
+
+    const out = await pool.query(sql, values);
+    return res.json({ ok: true, inserted: out.rowCount, ids: out.rows.map((x) => x.id) });
+  } catch (e) {
+    console.error("Import questions error:", e);
+    return res.status(400).json({ error: e?.message || "Import failed" });
+  }
+});
+
+
 app.listen(PORT, "127.0.0.1", () => {
   console.log(`Backend running on port ${PORT}`);
   console.log(`Password column = ${PASSWORD_COLUMN}`);
