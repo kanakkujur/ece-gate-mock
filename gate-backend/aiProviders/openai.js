@@ -7,7 +7,6 @@ if (!apiKey) {
 }
 
 const client = new OpenAI({ apiKey });
-
 const MODEL = process.env.OPENAI_MODEL || "gpt-4.1";
 
 function clamp(n, a, b) {
@@ -28,27 +27,35 @@ function defaultTypeMix(count) {
   return { MCQ: mcq, MSQ: msq, NAT: nat };
 }
 
-function normalizeOpenAIJson(raw, { section, subject, topic }) {
+function isPlainObject(x) {
+  return x && typeof x === "object" && !Array.isArray(x);
+}
+
+function normalizeOpenAIJson(raw, { section, subject, topic, difficulty }) {
   const out = raw && typeof raw === "object" ? raw : {};
+
   const topSubject = String(out.subject || subject || "").trim();
   const topTopic = String(out.topic || topic || "Mixed").trim();
   const topSection = String(out.section || section || "EC").trim();
 
   const qs = Array.isArray(out.questions) ? out.questions : [];
 
-  const questions = qs.map((q, idx) => {
-    const type = normalizeType(q.type);
-    const qSubject = String(q.subject || topSubject).trim();
-    const qTopic = String(q.topic || topTopic).trim();
+  const forcedDifficulty = String(difficulty || "medium").trim().toLowerCase();
 
-    const question = String(q.question || "").trim();
+  const questions = qs.map((q, idx) => {
+    const type = normalizeType(q?.type);
+
+    const qSubject = String(q?.subject || topSubject).trim() || String(subject || "").trim();
+    const qTopic = String(q?.topic || topTopic).trim() || String(topic || "Mixed").trim();
+
+    const question = String(q?.question || "").trim();
 
     // options: required for MCQ/MSQ, must be null for NAT
     let options = null;
     if (type === "NAT") {
       options = null;
     } else {
-      const opt = q.options && typeof q.options === "object" ? q.options : {};
+      const opt = isPlainObject(q?.options) ? q.options : {};
       options = {
         A: String(opt.A ?? "").trim(),
         B: String(opt.B ?? "").trim(),
@@ -58,34 +65,32 @@ function normalizeOpenAIJson(raw, { section, subject, topic }) {
     }
 
     // answer normalization
-    let answer = q.answer;
+    let answer = q?.answer;
     if (type === "MCQ") answer = String(answer ?? "").trim(); // "A"
     if (type === "MSQ") {
       if (!Array.isArray(answer)) answer = [];
       answer = answer.map((x) => String(x).trim()).filter(Boolean).sort();
     }
     if (type === "NAT") {
-      // allow number or numeric string; store as string is ok for your DB
-      answer = answer == null ? "" : String(answer).trim();
+      answer = answer == null ? "" : String(answer).trim(); // store as string ok
     }
 
-    const marks = Number.isFinite(Number(q.marks)) ? Number(q.marks) : 1;
-    const neg_marks =
-      Number.isFinite(Number(q.neg_marks)) ? Number(q.neg_marks) : 0.33;
+    const marks = Number.isFinite(Number(q?.marks)) ? Number(q.marks) : 1;
+    const neg_marks = Number.isFinite(Number(q?.neg_marks)) ? Number(q.neg_marks) : 0.33;
 
-    // map explanation/solution_steps -> solution (your DB column is "solution")
-    const explanation = String(q.explanation || "").trim();
-    const steps = Array.isArray(q.solution_steps) ? q.solution_steps : [];
+    // map explanation/solution_steps -> solution (DB column "solution")
+    const explanation = String(q?.explanation || "").trim();
+    const steps = Array.isArray(q?.solution_steps) ? q.solution_steps : [];
     const stepsText = steps.length
       ? `\n\nSteps:\n- ${steps.map((s) => String(s)).join("\n- ")}`
       : "";
+    const solution = (explanation || stepsText) ? `${explanation}${stepsText}`.trim() : "";
 
-    const solution = (explanation || stepsText)
-      ? `${explanation}${stepsText}`.trim()
-      : "";
+    // IMPORTANT: difficulty enforcement (prevents "always hard" problem)
+    // even if model returns wrong value, we force it to requested difficulty
+    const difficultyOut = forcedDifficulty;
 
     return {
-      // IMPORTANT: include subject/topic per question -> importer is happy
       subject: qSubject,
       topic: qTopic,
       type,
@@ -96,18 +101,16 @@ function normalizeOpenAIJson(raw, { section, subject, topic }) {
       neg_marks,
       solution,
       source: "AI",
-      // keep any extras if you want later
-      _meta: {
-        section: topSection,
-        idx,
-      },
+      difficulty: difficultyOut, // optional column (harmless even if DB ignores)
+      _meta: { section: topSection, idx },
     };
   });
 
   return {
     section: topSection,
-    subject: topSubject,
-    topic: topTopic,
+    subject: topSubject || String(subject || "").trim(),
+    topic: topTopic || String(topic || "Mixed").trim(),
+    difficulty: forcedDifficulty,
     questions,
   };
 }
@@ -117,7 +120,8 @@ function normalizeOpenAIJson(raw, { section, subject, topic }) {
  * {
  *   mode:"subject",
  *   subject, topic, count,
- *   typeMix: {MCQ, MSQ, NAT}
+ *   typeMix: {MCQ, MSQ, NAT},
+ *   difficulty: "easy|medium|hard"
  * }
  */
 export async function generateQuestions({
@@ -125,16 +129,18 @@ export async function generateQuestions({
   subject = "Signals and Systems",
   topic = "Mixed",
   count = 5,
-  // accept BOTH names to avoid mismatch bugs
   typeMix,
   typesMix,
-  difficulty = "gate-standard",
+  difficulty = "medium",
 } = {}) {
   const n = clamp(Number(count) || 1, 1, 100);
 
+  const diff = String(difficulty || "medium").toLowerCase();
+  const allowed = new Set(["easy", "medium", "hard"]);
+  const finalDiff = allowed.has(diff) ? diff : "medium";
+
   const mix = typeMix || typesMix || defaultTypeMix(n);
 
-  // fix rounding issues if any
   const mcq = Number(mix.MCQ || 0);
   const msq = Number(mix.MSQ || 0);
   let nat = Number(mix.NAT || 0);
@@ -151,16 +157,36 @@ Constraints:
 - section: ${section}
 - subject: ${subject}
 - ${topicLine}
-- difficulty: ${difficulty}
 - total questions: ${n}
 - type mix: MCQ=${mcq}, MSQ=${msq}, NAT=${nat}
+- target difficulty: ${finalDiff}
+
+DIFFICULTY RULES (MUST FOLLOW STRICTLY):
+- easy:
+  - direct concept/formula recall
+  - at most 2 short steps
+  - NO trick wording, NO multi-concept coupling
+- medium:
+  - 2–4 steps, one main concept + light secondary idea
+  - can include small trap but not lengthy derivation
+- hard:
+  - 5+ steps OR multi-concept coupling OR lengthy derivation
+  - can include tricky corner cases
+
+FORBIDDEN when difficulty=easy:
+- multi-concept coupling
+- long derivations
+- tricky exceptions/corner cases
+- more than 2 steps in solution_steps
+
+FORBIDDEN when difficulty=medium:
+- more than 4 steps in solution_steps
+- multi-page derivations
 
 Rules:
 - MCQ: exactly 4 options (A-D), single correct (answer="A")
 - MSQ: 4 options (A-D), 2+ correct (answer=["A","C"])
 - NAT: numeric answer (answer=number), options MUST be null
-- Each question must include:
-  type, question, options, answer, marks (1 or 2), explanation, solution_steps
 
 JSON schema:
 {
@@ -174,11 +200,16 @@ JSON schema:
       "options": {"A":"", "B":"", "C":"", "D":""} | null,
       "answer": "A" | ["A","C"] | 3.14,
       "marks": 1|2,
+      "neg_marks": 0.33,
+      "difficulty": "easy|medium|hard",
       "explanation": "short explanation",
       "solution_steps": ["step1","step2"]
     }
   ]
 }
+
+IMPORTANT:
+- Every question.difficulty MUST equal "${finalDiff}" exactly.
 `.trim();
 
   const resp = await client.responses.create({
@@ -197,6 +228,5 @@ JSON schema:
     json = JSON.parse(m[0]);
   }
 
-  // IMPORTANT: normalize to match your importer expectations
-  return normalizeOpenAIJson(json, { section, subject, topic });
+  return normalizeOpenAIJson(json, { section, subject, topic, difficulty: finalDiff });
 }
