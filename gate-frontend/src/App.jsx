@@ -23,7 +23,12 @@ export default function App() {
 
   // exam state
   const [examQuestions, setExamQuestions] = useState([]);
-  const [examMeta, setExamMeta] = useState({ mode: "main", subject: "MAIN" });
+  const [examMeta, setExamMeta] = useState({ mode: "main", subject: "EC" });
+
+  // STAGE-6B (AI Subject Generate)
+  const [aiGen, setAiGen] = useState(null);
+  const [aiGenLoading, setAiGenLoading] = useState(false);
+  const [aiImportLoading, setAiImportLoading] = useState(false);
 
   const isAuthed = !!token;
 
@@ -104,6 +109,7 @@ export default function App() {
                   clearSession();
                   setBlueprint(null);
                   setScreen("dashboard");
+                  setAiGen(null);
                 }}
                 style={{
                   padding: "7px 10px",
@@ -124,30 +130,30 @@ export default function App() {
     );
   }, [isAuthed, email, clearSession, token, blueprint]);
 
-  // ✅ MAIN: do NOT send subjects=EC (DB doesn't have subject "EC")
+  // Start MAIN: 65 questions
   async function onStartMain() {
     try {
-      const data = await apiFetch(`/test/generate?count=65`, { token });
-      const qs = Array.isArray(data?.questions) ? data.questions : [];
+      const data = await apiFetch(`/test/generate?count=65&subjects=EC`, { token });
+      const qs = data?.questions || [];
       if (!qs.length) throw new Error("No questions returned");
 
       setExamQuestions(qs);
-      setExamMeta({ mode: "main", subject: "MAIN" });
+      setExamMeta({ mode: "main", subject: "EC" });
       setScreen("exam");
     } catch (e) {
       alert(e?.message || "Failed to start test");
     }
   }
 
-  // SUBJECT-WISE: send the exact DB subject string (Networks, Digital Electronics, etc)
+  // Start SUBJECT-WISE: 65 from a chosen subject label
   async function onStartSubject(subject) {
     try {
-      const subj = subject || "Networks";
+      const subj = subject || "EC";
       const data = await apiFetch(
         `/test/generate?count=65&subjects=${encodeURIComponent(subj)}`,
         { token }
       );
-      const qs = Array.isArray(data?.questions) ? data.questions : [];
+      const qs = data?.questions || [];
       if (!qs.length) throw new Error("No questions returned");
 
       setExamQuestions(qs);
@@ -166,12 +172,64 @@ export default function App() {
         body: { score, accuracy, answers, totalQuestions },
       });
 
+      // refresh history
       const data = await apiFetch("/test/history", { token });
       setHistory(Array.isArray(data) ? data : []);
 
       setScreen("dashboard");
     } catch (e) {
       alert(e?.message || "Submit failed");
+    }
+  }
+
+  // =========================
+  // STAGE-6B: AI Subject Generate + Import
+  // =========================
+  async function onAIGenerateSubject({ subject, topic, count, difficulty }) {
+    if (!token) throw new Error("Missing token");
+    setAiGenLoading(true);
+    try {
+      const payload = {
+        provider: "openai",
+        mode: "subject",
+        subject,
+        topic,
+        count,
+        difficulty, // ✅ critical for Stage-6B
+      };
+
+      const data = await apiFetch("/ai/generate", {
+        token,
+        method: "POST",
+        body: payload,
+      });
+
+      setAiGen(data);
+      return data;
+    } finally {
+      setAiGenLoading(false);
+    }
+  }
+
+  async function onAIImportGenerated() {
+    if (!token) throw new Error("Missing token");
+    const qs = aiGen?.questions;
+    if (!Array.isArray(qs) || qs.length === 0) {
+      throw new Error("No generated questions to import");
+    }
+
+    setAiImportLoading(true);
+    try {
+      const out = await apiFetch("/questions/import", {
+        token,
+        method: "POST",
+        body: { questions: qs },
+      });
+
+      alert(`Imported ✅ inserted=${out?.inserted ?? "?"}`);
+      return out;
+    } finally {
+      setAiImportLoading(false);
     }
   }
 
@@ -210,6 +268,12 @@ export default function App() {
           history={loadingHistory ? [] : history}
           onStartMain={onStartMain}
           onStartSubject={onStartSubject}
+          // Stage-6B props:
+          aiGen={aiGen}
+          aiGenLoading={aiGenLoading}
+          aiImportLoading={aiImportLoading}
+          onAIGenerateSubject={onAIGenerateSubject}
+          onAIImportGenerated={onAIImportGenerated}
         />
       ) : (
         <Exam

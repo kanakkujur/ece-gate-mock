@@ -39,9 +39,6 @@ const PASSWORD_COLUMN = ALLOWED_PASSWORD_COLUMNS.has(PASSWORD_COLUMN_RAW)
 const DEFAULT_AI_PROVIDER = (process.env.AI_PROVIDER || "openai").toLowerCase(); // auto|openai|local
 const AI_CACHE_TTL_MS = parseInt(process.env.AI_CACHE_TTL_MS || "", 10) || 24 * 60 * 60 * 1000; // 24h
 
-// difficulty allowlist
-const DIFF_ALLOWED = new Set(["easy", "medium", "hard"]);
-
 /* -------------------------
    Helpers
 ------------------------- */
@@ -83,6 +80,7 @@ function cacheSet(key, value) {
 
 // ----------- Random helpers -----------
 function randInt(min, max) {
+  // inclusive
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
@@ -109,6 +107,7 @@ const MAIN_EC_SUBJECTS = [
 function buildMainBlueprint({ total = 65, geCount = 10, minPerSubject = 1, maxPerSubject = 5 } = {}) {
   const ecTotal = total - geCount;
 
+  // assign 1..5 to each EC subject
   const dist = {};
   let sum = 0;
   for (const s of MAIN_EC_SUBJECTS) {
@@ -117,6 +116,7 @@ function buildMainBlueprint({ total = 65, geCount = 10, minPerSubject = 1, maxPe
     sum += n;
   }
 
+  // if sum exceeds ecTotal, reduce randomly down to ecTotal while respecting min
   while (sum > ecTotal) {
     const pick = MAIN_EC_SUBJECTS[randInt(0, MAIN_EC_SUBJECTS.length - 1)];
     if (dist[pick] > minPerSubject) {
@@ -125,6 +125,7 @@ function buildMainBlueprint({ total = 65, geCount = 10, minPerSubject = 1, maxPe
     }
   }
 
+  // if sum is less than ecTotal, fill remainder into EC_MIXED
   const remainder = ecTotal - sum;
   if (remainder > 0) dist["EC_MIXED"] = remainder;
 
@@ -133,17 +134,26 @@ function buildMainBlueprint({ total = 65, geCount = 10, minPerSubject = 1, maxPe
     total,
     GE: geCount,
     EC: ecTotal,
-    perSubject: dist,
+    perSubject: dist, // EC subjects + EC_MIXED (if needed)
     constraints: { minPerSubject, maxPerSubject },
   };
 }
 
+/**
+ * Choose a mix of question types.
+ */
 function defaultTypeMix(count) {
+  // Aim for ~60% MCQ, 20% MSQ, 20% NAT
   const mcq = Math.max(0, Math.round(count * 0.6));
   const msq = Math.max(0, Math.round(count * 0.2));
   let nat = count - mcq - msq;
   if (nat < 0) nat = 0;
   return { MCQ: mcq, MSQ: msq, NAT: nat };
+}
+
+function normalizeDifficulty(v) {
+  const x = String(v || "").toLowerCase().trim();
+  return x === "easy" || x === "medium" || x === "hard" ? x : "medium";
 }
 
 /* -------------------------
@@ -205,6 +215,7 @@ app.post("/api/auth/login", async (req, res) => {
    GET  /api/ai/blueprint
 ========================================================= */
 
+// Returns a randomized blueprint (use this in UI / to preview distribution)
 app.get("/api/ai/blueprint", authMiddleware, async (req, res) => {
   const mode = (req.query.mode || "main").toString().toLowerCase();
   if (mode !== "main") {
@@ -218,6 +229,7 @@ app.get("/api/ai/blueprint", authMiddleware, async (req, res) => {
   res.json(blueprint);
 });
 
+// Provider resolver
 async function runProvider(provider, payload) {
   if (provider === "openai") return await generateOpenAIQuestions(payload);
   if (provider === "local") return await generateLocalQuestions(payload);
@@ -238,20 +250,18 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
     const provider = (req.body?.provider || DEFAULT_AI_PROVIDER).toLowerCase();
     const mode = (req.body?.mode || "subject").toLowerCase();
 
-    const diffRaw = String(req.body?.difficulty || "medium").toLowerCase();
-    const difficulty = DIFF_ALLOWED.has(diffRaw) ? diffRaw : "medium";
-
-    // NOTE: include difficulty in cacheKey => no "stuck on hard" due to cached old body
     const cacheKey = JSON.stringify({
       provider,
       mode,
-      difficulty,
       body: req.body,
       model: process.env.OPENAI_MODEL || process.env.LOCAL_LLM_MODEL || "",
     });
 
     const cached = cacheGet(cacheKey);
     if (cached) return res.json({ ...cached, cached: true });
+
+    // difficulty for BOTH modes
+    const diff = normalizeDifficulty(req.body?.difficulty);
 
     // ---------- SUBJECT MODE ----------
     if (mode === "subject") {
@@ -266,7 +276,7 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
         topic,
         count: n,
         typeMix: defaultTypeMix(n),
-        difficulty,
+        difficulty: diff,
       };
 
       const data = await runProvider(provider, payload);
@@ -292,7 +302,7 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
         topic: req.body?.geTopic || "Mixed",
         count: geCount,
         typeMix: defaultTypeMix(geCount),
-        difficulty,
+        difficulty: diff,
       };
 
       const subjectPayloads = [];
@@ -306,7 +316,7 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
           topic: "Mixed",
           count: n,
           typeMix: defaultTypeMix(n),
-          difficulty,
+          difficulty: diff,
         });
       }
 
@@ -322,13 +332,14 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
         const qs = resp?.questions || resp?.data?.questions || resp?.result?.questions;
         if (Array.isArray(qs)) {
           for (const q of qs) all.push({ ...q, section: sectionName });
+        } else if (Array.isArray(resp?.questions)) {
+          for (const q of resp.questions) all.push({ ...q, section: sectionName });
         } else if (Array.isArray(resp)) {
           for (const q of resp) all.push({ ...q, section: sectionName });
         }
       };
 
       pushQuestions(geOut, "GE");
-
       for (const part of ecOut) {
         const sectionName = part?.subject || part?.meta?.subject || "EC";
         pushQuestions(part, sectionName);
@@ -337,8 +348,8 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
       const result = {
         provider,
         mode: "main",
-        difficulty,
         blueprint,
+        difficulty: diff,
         totalQuestions: all.length,
         questions: all,
       };
@@ -562,7 +573,7 @@ app.get("/api/test/history", authMiddleware, async (req, res) => {
 });
 
 /* =========================================================
-   QUESTIONS IMPORT
+   QUESTIONS (Import AI-generated questions into DB)
 ========================================================= */
 
 function sanitizeType(t) {
@@ -596,6 +607,7 @@ app.post("/api/questions/import", authMiddleware, async (req, res) => {
       const topic = String(q.topic || defaultTopic || "Mixed").trim();
 
       const type = sanitizeType(q.type);
+
       const question = String(q.question || "").trim();
       const answer = q.answer == null ? "" : String(q.answer).trim();
       const solution = String(q.solution || "").trim();
@@ -613,13 +625,13 @@ app.post("/api/questions/import", authMiddleware, async (req, res) => {
 
       const marks = asNum(q.marks, 1);
       const neg_marks = asNum(q.neg_marks, 0.33);
+
       const source = String(q.source || "AI").trim();
 
       const year = q.year == null || q.year === "" ? null : Number(q.year);
       const paper = q.paper == null ? null : String(q.paper);
       const session = q.session == null ? null : String(q.session);
-      const question_number =
-        q.question_number == null || q.question_number === "" ? null : Number(q.question_number);
+      const question_number = q.question_number == null || q.question_number === "" ? null : Number(q.question_number);
 
       return {
         subject,
@@ -699,6 +711,7 @@ app.post("/api/questions/import", authMiddleware, async (req, res) => {
    Start
 ------------------------- */
 const PORT = process.env.PORT || 4000;
+
 app.listen(PORT, "127.0.0.1", () => {
   console.log(`Backend running on port ${PORT}`);
   console.log(`Password column = ${PASSWORD_COLUMN}`);

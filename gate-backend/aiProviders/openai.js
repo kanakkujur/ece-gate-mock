@@ -7,6 +7,7 @@ if (!apiKey) {
 }
 
 const client = new OpenAI({ apiKey });
+
 const MODEL = process.env.OPENAI_MODEL || "gpt-4.1";
 
 function clamp(n, a, b) {
@@ -27,26 +28,30 @@ function defaultTypeMix(count) {
   return { MCQ: mcq, MSQ: msq, NAT: nat };
 }
 
-function isPlainObject(x) {
-  return x && typeof x === "object" && !Array.isArray(x);
+function normalizeDifficulty(d, fallback = "medium") {
+  const x = String(d || "").trim().toLowerCase();
+  if (x === "easy" || x === "medium" || x === "hard") return x;
+  return fallback;
 }
 
+/**
+ * Normalizes any provider JSON into the shape your importer expects:
+ * questions[] each includes subject/topic/type/question/options/answer/marks/neg_marks/solution/source (+difficulty optional)
+ */
 function normalizeOpenAIJson(raw, { section, subject, topic, difficulty }) {
   const out = raw && typeof raw === "object" ? raw : {};
 
   const topSubject = String(out.subject || subject || "").trim();
   const topTopic = String(out.topic || topic || "Mixed").trim();
   const topSection = String(out.section || section || "EC").trim();
+  const topDifficulty = normalizeDifficulty(out.difficulty || difficulty || "medium", "medium");
 
   const qs = Array.isArray(out.questions) ? out.questions : [];
 
-  const forcedDifficulty = String(difficulty || "medium").trim().toLowerCase();
-
   const questions = qs.map((q, idx) => {
     const type = normalizeType(q?.type);
-
-    const qSubject = String(q?.subject || topSubject).trim() || String(subject || "").trim();
-    const qTopic = String(q?.topic || topTopic).trim() || String(topic || "Mixed").trim();
+    const qSubject = String(q?.subject || topSubject).trim();
+    const qTopic = String(q?.topic || topTopic).trim();
 
     const question = String(q?.question || "").trim();
 
@@ -55,7 +60,7 @@ function normalizeOpenAIJson(raw, { section, subject, topic, difficulty }) {
     if (type === "NAT") {
       options = null;
     } else {
-      const opt = isPlainObject(q?.options) ? q.options : {};
+      const opt = q?.options && typeof q.options === "object" ? q.options : {};
       options = {
         A: String(opt.A ?? "").trim(),
         B: String(opt.B ?? "").trim(),
@@ -72,23 +77,23 @@ function normalizeOpenAIJson(raw, { section, subject, topic, difficulty }) {
       answer = answer.map((x) => String(x).trim()).filter(Boolean).sort();
     }
     if (type === "NAT") {
-      answer = answer == null ? "" : String(answer).trim(); // store as string ok
+      // allow number or numeric string; store as string is ok for your DB
+      answer = answer == null ? "" : String(answer).trim();
     }
 
     const marks = Number.isFinite(Number(q?.marks)) ? Number(q.marks) : 1;
     const neg_marks = Number.isFinite(Number(q?.neg_marks)) ? Number(q.neg_marks) : 0.33;
 
-    // map explanation/solution_steps -> solution (DB column "solution")
+    // map explanation/solution_steps -> solution (your DB column is "solution")
     const explanation = String(q?.explanation || "").trim();
     const steps = Array.isArray(q?.solution_steps) ? q.solution_steps : [];
     const stepsText = steps.length
       ? `\n\nSteps:\n- ${steps.map((s) => String(s)).join("\n- ")}`
       : "";
+
     const solution = (explanation || stepsText) ? `${explanation}${stepsText}`.trim() : "";
 
-    // IMPORTANT: difficulty enforcement (prevents "always hard" problem)
-    // even if model returns wrong value, we force it to requested difficulty
-    const difficultyOut = forcedDifficulty;
+    const difficultyOut = normalizeDifficulty(q?.difficulty || topDifficulty, topDifficulty);
 
     return {
       subject: qSubject,
@@ -101,16 +106,16 @@ function normalizeOpenAIJson(raw, { section, subject, topic, difficulty }) {
       neg_marks,
       solution,
       source: "AI",
-      difficulty: difficultyOut, // optional column (harmless even if DB ignores)
+      difficulty: difficultyOut, // optional field (harmless even if DB ignores)
       _meta: { section: topSection, idx },
     };
   });
 
   return {
     section: topSection,
-    subject: topSubject || String(subject || "").trim(),
-    topic: topTopic || String(topic || "Mixed").trim(),
-    difficulty: forcedDifficulty,
+    subject: topSubject,
+    topic: topTopic,
+    difficulty: topDifficulty,
     questions,
   };
 }
@@ -129,18 +134,18 @@ export async function generateQuestions({
   subject = "Signals and Systems",
   topic = "Mixed",
   count = 5,
+  // accept BOTH names to avoid mismatch bugs
   typeMix,
   typesMix,
-  difficulty = "medium",
+  difficulty = "medium", // easy|medium|hard
 } = {}) {
   const n = clamp(Number(count) || 1, 1, 100);
 
-  const diff = String(difficulty || "medium").toLowerCase();
-  const allowed = new Set(["easy", "medium", "hard"]);
-  const finalDiff = allowed.has(diff) ? diff : "medium";
+  const diff = normalizeDifficulty(difficulty, "medium");
 
   const mix = typeMix || typesMix || defaultTypeMix(n);
 
+  // fix rounding issues if any
   const mcq = Number(mix.MCQ || 0);
   const msq = Number(mix.MSQ || 0);
   let nat = Number(mix.NAT || 0);
@@ -159,7 +164,7 @@ Constraints:
 - ${topicLine}
 - total questions: ${n}
 - type mix: MCQ=${mcq}, MSQ=${msq}, NAT=${nat}
-- target difficulty: ${finalDiff}
+- target difficulty: ${diff}
 
 DIFFICULTY RULES (MUST FOLLOW STRICTLY):
 - easy:
@@ -193,6 +198,7 @@ JSON schema:
   "section": "GE|EC",
   "subject": "string",
   "topic": "string",
+  "difficulty": "easy|medium|hard",
   "questions": [
     {
       "type": "MCQ|MSQ|NAT",
@@ -209,7 +215,7 @@ JSON schema:
 }
 
 IMPORTANT:
-- Every question.difficulty MUST equal "${finalDiff}" exactly.
+- Every question.difficulty MUST equal "${diff}" exactly.
 `.trim();
 
   const resp = await client.responses.create({
@@ -228,5 +234,6 @@ IMPORTANT:
     json = JSON.parse(m[0]);
   }
 
-  return normalizeOpenAIJson(json, { section, subject, topic, difficulty: finalDiff });
+  // normalize output to match your importer expectations
+  return normalizeOpenAIJson(json, { section, subject, topic, difficulty: diff });
 }
