@@ -1,12 +1,14 @@
 // FILE: ~/gate-frontend/src/Dashboard.jsx
 import React, { useMemo, useState } from "react";
-import { apiFetch } from "./api.js";
-import { useAuthStore } from "./authStore.js";
 
 /**
- * Stage-6B (Option A) — Subject mode only (simpler & safer)
- * Adds Difficulty dropdown + AI generate in subject mode only.
- * Does NOT change existing Stage-4/5 flows.
+ * Stage-6B (Option A):
+ * Add AI Subject Generation controls:
+ * - difficulty dropdown (easy/medium/hard)
+ * - call /api/ai/generate with difficulty in body
+ * - show response + optional Import button
+ *
+ * Existing Stage-4/5 flows remain unchanged.
  */
 
 function clamp(n, a, b) {
@@ -55,41 +57,49 @@ function Pie({ correct = 0, total = 0 }) {
   );
 }
 
+const SUBJECTS = [
+  "Networks",
+  "Digital Electronics",
+  "Control Systems",
+  "Signals and Systems",
+  "Analog Circuits",
+  "Communication",
+  "Electromagnetics",
+  "Electronic Devices",
+  "Engineering Mathematics",
+];
+
 export default function Dashboard({
   history = [],
   onStartMain = () => {},
   onStartSubject = (_subject) => {},
+
+  // Stage-6B props:
+  aiGen = null,
+  aiGenLoading = false,
+  aiImportLoading = false,
+  onAIGenerateSubject = null,
+  onAIImportGenerated = null,
 }) {
-  const token = useAuthStore((s) => s.token);
-
   // type selector: "main" or "subject"
-  const [mode, setMode] = useState("main"); // default: main
-  const [subject, setSubject] = useState("Networks"); // subject mode selection
+  const [mode, setMode] = useState("main");
+  const [subject, setSubject] = useState("Networks"); // used in subject mode
 
-  // Stage-6B: Difficulty selection + AI generation controls (subject mode only)
-  const [difficulty, setDifficulty] = useState("medium"); // easy|medium|hard
+  // Stage-6B (AI subject generation inputs)
+  const [aiSubject, setAiSubject] = useState("Networks");
   const [aiTopic, setAiTopic] = useState("Basics");
   const [aiCount, setAiCount] = useState(5);
-  const [aiProvider, setAiProvider] = useState("openai"); // openai|auto|local (backend supports)
+  const [aiDifficulty, setAiDifficulty] = useState("medium"); // easy|medium|hard
 
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState("");
-  const [aiResult, setAiResult] = useState(null);
-
-  const [importLoading, setImportLoading] = useState(false);
-  const [importMsg, setImportMsg] = useState("");
-
-  /**
-   * History filter:
-   * - supports future fields row.mode / row.subject
-   * - if not present, treats as main
-   */
   const filteredHistory = useMemo(() => {
     if (!Array.isArray(history) || history.length === 0) return [];
+
     return history.filter((h) => {
       const hMode = h?.mode || "main";
       if (hMode !== mode) return false;
-      if (mode === "subject") return (h?.subject || "") === subject;
+      if (mode === "subject") {
+        return (h?.subject || "") === subject;
+      }
       return true;
     });
   }, [history, mode, subject]);
@@ -106,9 +116,7 @@ export default function Dashboard({
   const latestAcc = latest?.accuracy != null ? Number(latest.accuracy) : null;
 
   const latestCorrect =
-    latestAcc != null && latestTotal
-      ? Math.round((latestAcc / 100) * Number(latestTotal))
-      : 0;
+    latestAcc != null && latestTotal ? Math.round((latestAcc / 100) * Number(latestTotal)) : 0;
 
   const avg = useMemo(() => {
     if (!filteredHistory.length) return null;
@@ -121,7 +129,6 @@ export default function Dashboard({
       sumScore += Number(h?.score ?? 0);
       sumAcc += Number(h?.accuracy ?? 0);
     }
-
     return {
       attempts: n,
       avgScore: sumScore / n,
@@ -131,93 +138,49 @@ export default function Dashboard({
 
   const hasData = filteredHistory.length > 0;
 
-  async function onGenerateAI() {
-    setAiError("");
-    setImportMsg("");
-    setAiResult(null);
-
-    if (!token) {
-      setAiError("Missing token. Please login again.");
+  async function handleAIGenerate() {
+    if (!onAIGenerateSubject) {
+      alert("AI generate handler missing (frontend wiring bug)");
       return;
     }
-    if (mode !== "subject") {
-      setAiError("AI Subject Generation is only enabled in Subject-wise mode (Stage-6B Option A).");
-      return;
-    }
-
-    const d = String(difficulty || "medium").toLowerCase();
-    const allowed = new Set(["easy", "medium", "hard"]);
-    const diff = allowed.has(d) ? d : "medium";
-
-    const countNum = clamp(parseInt(aiCount, 10) || 5, 1, 100);
-    const topic = String(aiTopic || "Mixed").trim() || "Mixed";
-
-    setAiLoading(true);
     try {
-      const data = await apiFetch("/ai/generate", {
-        token,
-        method: "POST",
-        body: {
-          provider: aiProvider,
-          mode: "subject",
-          subject,
-          topic,
-          count: countNum,
-          difficulty: diff, // ✅ Stage-6B requirement
-        },
+      const c = clamp(parseInt(aiCount, 10) || 5, 1, 50);
+      const diff = String(aiDifficulty || "medium").toLowerCase();
+      await onAIGenerateSubject({
+        subject: aiSubject,
+        topic: aiTopic || "Mixed",
+        count: c,
+        difficulty: diff, // ✅ Stage-6B requirement
       });
-
-      setAiResult(data);
     } catch (e) {
-      setAiError(e?.message || "AI generation failed");
-    } finally {
-      setAiLoading(false);
+      alert(e?.message || "AI generate failed");
     }
   }
 
-  async function onImportAI() {
-    setImportMsg("");
-    setAiError("");
-
-    if (!token) {
-      setAiError("Missing token. Please login again.");
+  async function handleAIImport() {
+    if (!onAIImportGenerated) {
+      alert("AI import handler missing (frontend wiring bug)");
       return;
     }
-    const qs = aiResult?.questions;
-    if (!Array.isArray(qs) || !qs.length) {
-      setAiError("No generated questions found to import.");
-      return;
-    }
-
-    setImportLoading(true);
     try {
-      // Your importer can work without defaults now (Stage-5 Clean),
-      // but we still provide defaults as extra safety.
-      const resp = await apiFetch("/questions/import", {
-        token,
-        method: "POST",
-        body: {
-          defaultSubject: subject,
-          defaultTopic: String(aiTopic || "Mixed").trim() || "Mixed",
-          questions: qs,
-        },
-      });
-
-      setImportMsg(`Imported ✅ inserted=${resp?.inserted ?? "?"}`);
+      await onAIImportGenerated();
     } catch (e) {
-      setAiError(e?.message || "Import failed");
-    } finally {
-      setImportLoading(false);
+      alert(e?.message || "Import failed");
     }
   }
 
-  // small helper to show quick validation that difficulty matches selection
-  const diffMismatch = useMemo(() => {
-    const wanted = String(difficulty || "").toLowerCase();
-    const qs = aiResult?.questions;
-    if (!wanted || !Array.isArray(qs) || !qs.length) return false;
-    return qs.some((q) => String(q?.difficulty || "").toLowerCase() !== wanted);
-  }, [aiResult, difficulty]);
+  const aiPreview = useMemo(() => {
+    const qs = aiGen?.questions;
+    if (!Array.isArray(qs) || qs.length === 0) return null;
+    return qs.slice(0, 3).map((q, i) => ({
+      i,
+      type: q?.type,
+      difficulty: q?.difficulty,
+      subject: q?.subject,
+      topic: q?.topic,
+      question: q?.question,
+    }));
+  }, [aiGen]);
 
   return (
     <div className="dashWrap">
@@ -244,15 +207,9 @@ export default function Dashboard({
 
             {mode === "subject" && (
               <select className="sel" value={subject} onChange={(e) => setSubject(e.target.value)}>
-                <option>Networks</option>
-                <option>Digital Electronics</option>
-                <option>Control Systems</option>
-                <option>Signals and Systems</option>
-                <option>Analog Circuits</option>
-                <option>Communication</option>
-                <option>Electromagnetics</option>
-                <option>Electronic Devices</option>
-                <option>Engineering Mathematics</option>
+                {SUBJECTS.map((s) => (
+                  <option key={s}>{s}</option>
+                ))}
               </select>
             )}
           </div>
@@ -322,202 +279,117 @@ export default function Dashboard({
             </button>
           )}
 
-          <div className="hint">No “number of questions” selector — always 65 (Main: 10 GA + 55 EC).</div>
+          <div className="hint">
+            No “number of questions” selector — always 65 (Main: 10 GA + 55 EC).
+          </div>
         </div>
       </section>
 
-      {/* Stage-6B Option A: Subject mode only */}
-      {mode === "subject" && (
-        <>
-          <hr className="sep" />
+      {/* STAGE-6B: AI SUBJECT GENERATION (Option A) */}
+      <hr className="sep" />
+      <section className="tile">
+        <h2>AI Subject Generator (Stage-6B)</h2>
 
-          <section className="tile">
-            <h2>AI Subject Generation (Stage-6B)</h2>
+        <div className="hint" style={{ marginBottom: 10 }}>
+          Generates questions via <b>/api/ai/generate</b> in <b>subject</b> mode only. Existing flows unchanged.
+        </div>
 
-            <div className="startRow" style={{ alignItems: "flex-start" }}>
-              <div style={{ display: "grid", gap: 10, minWidth: 320 }}>
-                <div style={{ display: "grid", gap: 6 }}>
-                  <div className="hint" style={{ margin: 0 }}>
-                    Generate AI questions for <b>{subject}</b> and optionally import into DB.
-                  </div>
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <label style={{ display: "grid", gap: 4 }}>
+              <span style={{ fontSize: 12, opacity: 0.75 }}>Subject</span>
+              <select className="sel" value={aiSubject} onChange={(e) => setAiSubject(e.target.value)}>
+                {SUBJECTS.map((s) => (
+                  <option key={s}>{s}</option>
+                ))}
+              </select>
+            </label>
+
+            <label style={{ display: "grid", gap: 4 }}>
+              <span style={{ fontSize: 12, opacity: 0.75 }}>Topic</span>
+              <input
+                className="sel"
+                value={aiTopic}
+                onChange={(e) => setAiTopic(e.target.value)}
+                placeholder="Basics / Mixed / etc"
+              />
+            </label>
+
+            <label style={{ display: "grid", gap: 4 }}>
+              <span style={{ fontSize: 12, opacity: 0.75 }}>Count</span>
+              <input
+                className="sel"
+                style={{ width: 120 }}
+                value={aiCount}
+                onChange={(e) => setAiCount(e.target.value)}
+                inputMode="numeric"
+              />
+            </label>
+
+            <label style={{ display: "grid", gap: 4 }}>
+              <span style={{ fontSize: 12, opacity: 0.75 }}>Difficulty</span>
+              <select
+                className="sel"
+                value={aiDifficulty}
+                onChange={(e) => setAiDifficulty(e.target.value)}
+              >
+                <option value="easy">easy</option>
+                <option value="medium">medium</option>
+                <option value="hard">hard</option>
+              </select>
+            </label>
+
+            <button className="primaryBtn" type="button" onClick={handleAIGenerate} disabled={aiGenLoading}>
+              {aiGenLoading ? "Generating…" : "Generate AI Questions"}
+            </button>
+
+            <button
+              className="segBtn"
+              type="button"
+              onClick={handleAIImport}
+              disabled={aiImportLoading || !(Array.isArray(aiGen?.questions) && aiGen.questions.length)}
+              title="Imports latest generated questions into DB"
+            >
+              {aiImportLoading ? "Importing…" : "Import to DB"}
+            </button>
+          </div>
+
+          {/* Confirmation / preview */}
+          <div className="card" style={{ marginTop: 6 }}>
+            <div className="cardTitle">Latest AI response</div>
+
+            {aiGen && Array.isArray(aiGen?.questions) ? (
+              <div style={{ display: "grid", gap: 10 }}>
+                <div style={{ fontSize: 13, opacity: 0.9 }}>
+                  Returned: <b>{aiGen.questions.length}</b> questions • Subject:{" "}
+                  <b>{aiGen.subject || aiSubject}</b> • Topic: <b>{aiGen.topic || aiTopic}</b>
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <div style={{ display: "grid", gap: 6 }}>
-                    <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 700 }}>Difficulty</div>
-                    <select className="sel" value={difficulty} onChange={(e) => setDifficulty(e.target.value)}>
-                      <option value="easy">easy</option>
-                      <option value="medium">medium</option>
-                      <option value="hard">hard</option>
-                    </select>
-                  </div>
-
-                  <div style={{ display: "grid", gap: 6 }}>
-                    <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 700 }}>Provider</div>
-                    <select className="sel" value={aiProvider} onChange={(e) => setAiProvider(e.target.value)}>
-                      <option value="openai">openai</option>
-                      <option value="auto">auto</option>
-                      <option value="local">local</option>
-                    </select>
-                  </div>
+                <div style={{ fontSize: 12, opacity: 0.75 }}>
+                  Expected difficulty: <b>{aiDifficulty}</b>
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 120px", gap: 10 }}>
-                  <div style={{ display: "grid", gap: 6 }}>
-                    <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 700 }}>Topic</div>
-                    <input
-                      className="sel"
-                      style={{ padding: "10px 12px" }}
-                      value={aiTopic}
-                      onChange={(e) => setAiTopic(e.target.value)}
-                      placeholder="e.g., Basics"
-                    />
-                  </div>
-
-                  <div style={{ display: "grid", gap: 6 }}>
-                    <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 700 }}>Count</div>
-                    <input
-                      className="sel"
-                      style={{ padding: "10px 12px" }}
-                      value={aiCount}
-                      onChange={(e) => setAiCount(e.target.value)}
-                      inputMode="numeric"
-                      placeholder="5"
-                    />
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <button className="primaryBtn" onClick={onGenerateAI} type="button" disabled={aiLoading}>
-                    {aiLoading ? "Generating…" : "Generate AI Questions"}
-                  </button>
-
-                  <button
-                    className="primaryBtn"
-                    onClick={onImportAI}
-                    type="button"
-                    disabled={importLoading || !Array.isArray(aiResult?.questions) || !aiResult?.questions?.length}
-                    style={{
-                      background: "white",
-                      color: "black",
-                      border: "1px solid rgba(0,0,0,0.15)",
-                    }}
-                  >
-                    {importLoading ? "Importing…" : "Import into DB"}
-                  </button>
-
-                  <button
-                    className="primaryBtn"
-                    onClick={() => {
-                      setAiError("");
-                      setImportMsg("");
-                      setAiResult(null);
-                    }}
-                    type="button"
-                    style={{
-                      background: "white",
-                      color: "black",
-                      border: "1px solid rgba(0,0,0,0.15)",
-                    }}
-                  >
-                    Clear
-                  </button>
-                </div>
-
-                {aiError ? <div className="naBox" style={{ color: "#b00020" }}>{aiError}</div> : null}
-                {importMsg ? <div className="naBox" style={{ color: "green" }}>{importMsg}</div> : null}
-
-                {aiResult && (
-                  <div className="naBox" style={{ textAlign: "left" }}>
-                    <div style={{ fontWeight: 900, marginBottom: 6 }}>Result</div>
-                    <div style={{ fontSize: 13, opacity: 0.9 }}>
-                      subject=<b>{aiResult?.subject ?? subject}</b>, topic=<b>{aiResult?.topic ?? aiTopic}</b>, count=
-                      <b>{aiResult?.questions?.length ?? 0}</b>, selected difficulty=<b>{difficulty}</b>
-                    </div>
-                    {diffMismatch ? (
-                      <div style={{ marginTop: 8, fontSize: 13, color: "#b00020", fontWeight: 800 }}>
-                        ⚠️ Difficulty mismatch detected in response. (At least one question.difficulty differs.)
+                {aiPreview ? (
+                  <div style={{ display: "grid", gap: 8 }}>
+                    {aiPreview.map((p) => (
+                      <div key={p.i} style={{ padding: 10, border: "1px solid rgba(0,0,0,0.08)", borderRadius: 12 }}>
+                        <div style={{ fontSize: 12, opacity: 0.75 }}>
+                          #{p.i + 1} • <b>{p.type}</b> • difficulty=<b>{p.difficulty ?? "—"}</b> • {p.subject} • {p.topic}
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 13 }}>{p.question}</div>
                       </div>
-                    ) : (
-                      <div style={{ marginTop: 8, fontSize: 13, color: "green", fontWeight: 800 }}>
-                        ✅ Difficulty matches selection (quick check).
-                      </div>
-                    )}
+                    ))}
                   </div>
+                ) : (
+                  <div className="naBox">No preview</div>
                 )}
               </div>
-
-              {/* Right side preview */}
-              <div style={{ flex: 1 }}>
-                <div className="card">
-                  <div className="cardTitle">Preview (first 2 questions)</div>
-
-                  {!aiResult?.questions?.length ? (
-                    <div className="naBox">N/A</div>
-                  ) : (
-                    <div style={{ display: "grid", gap: 12 }}>
-                      {aiResult.questions.slice(0, 2).map((q, i) => (
-                        <div
-                          key={i}
-                          style={{
-                            border: "1px solid rgba(0,0,0,0.10)",
-                            borderRadius: 12,
-                            padding: 12,
-                          }}
-                        >
-                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
-                            <span style={{ fontSize: 12, fontWeight: 900, opacity: 0.8 }}>
-                              {q?.type ?? "MCQ"}
-                            </span>
-                            <span style={{ fontSize: 12, opacity: 0.7 }}>
-                              difficulty: <b>{q?.difficulty ?? "—"}</b>
-                            </span>
-                          </div>
-
-                          <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.45 }}>
-                            {q?.question ?? "—"}
-                          </div>
-
-                          {q?.options && typeof q.options === "object" ? (
-                            <div style={{ marginTop: 10, display: "grid", gap: 6, fontSize: 13, opacity: 0.9 }}>
-                              {["A", "B", "C", "D"].map((k) => (
-                                <div key={k}>
-                                  <b>{k}.</b> {String(q.options?.[k] ?? "")}
-                                </div>
-                              ))}
-                            </div>
-                          ) : null}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Debug JSON (optional) */}
-                  {aiResult ? (
-                    <details style={{ marginTop: 12 }}>
-                      <summary style={{ cursor: "pointer", fontWeight: 800 }}>Raw JSON</summary>
-                      <pre
-                        style={{
-                          marginTop: 10,
-                          padding: 12,
-                          background: "#f6f7f8",
-                          borderRadius: 12,
-                          border: "1px solid rgba(0,0,0,0.08)",
-                          overflow: "auto",
-                          maxHeight: 280,
-                          fontSize: 12,
-                        }}
-                      >
-                        {JSON.stringify(aiResult, null, 2)}
-                      </pre>
-                    </details>
-                  ) : null}
-                </div>
-              </div>
-            </div>
-          </section>
-        </>
-      )}
+            ) : (
+              <div className="naBox">N/A</div>
+            )}
+          </div>
+        </div>
+      </section>
 
       <hr className="sep" />
 
@@ -535,8 +407,8 @@ export default function Dashboard({
                     <b>Accuracy:</b> {h?.accuracy ?? "—"}
                   </div>
                   <div className="histBottom">
-                    Total: {h?.totalQuestions ?? h?.totalquestions ?? "—"} <span className="dot">•</span> Time:{" "}
-                    {h?.created_at ? new Date(h.created_at).toISOString() : "—"}
+                    Total: {h?.totalQuestions ?? h?.totalquestions ?? "—"} <span className="dot">•</span>{" "}
+                    Time: {h?.created_at ? new Date(h.created_at).toISOString() : "—"}
                   </div>
                 </div>
               </div>
