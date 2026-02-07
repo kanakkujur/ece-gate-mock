@@ -245,6 +245,30 @@ function coerceCount(qs, desired) {
   return arr; // if short, caller decides how to fill
 }
 
+// STAGE-6C: Start MAIN test with difficulty
+app.post("/api/test/start-main", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const difficulty = normalizeDifficulty(req.body?.difficulty || "medium"); // easy|medium|hard
+
+    // TODO Stage-6C flow:
+    // 1) Build randomized blueprint for 65 (10 GE + 55 EC)
+    // 2) Ensure DB has enough questions per bucket (difficulty/section/subject)
+    //    - If insufficient: call /api/ai/generate mode=main to generate missing
+    //    - Import into questions table with question_hash dedupe
+    // 3) Create a new test_session row (is_submitted=false, mode=main, totalquestions=65)
+    // 4) Pick final 65 questions with rule: 40% previously seen, 60% new
+    // 5) Insert usage rows into question_usage(user_id, question_id, test_id)
+    // 6) Return { testId, questions, blueprint }
+
+    return res.status(501).json({ error: "Stage-6C start-main not implemented yet" });
+  } catch (e) {
+    console.error("start-main error:", e);
+    return res.status(500).json({ error: "Failed to start main test" });
+  }
+});
+
+
 app.post("/api/ai/generate", authMiddleware, async (req, res) => {
   try {
     const provider = (req.body?.provider || DEFAULT_AI_PROVIDER).toLowerCase();
