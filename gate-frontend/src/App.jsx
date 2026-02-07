@@ -23,7 +23,19 @@ export default function App() {
 
   // exam state
   const [examQuestions, setExamQuestions] = useState([]);
-  const [examMeta, setExamMeta] = useState({ mode: "main", subject: "EC" });
+  const [examMeta, setExamMeta] = useState({
+    mode: "main",
+    subject: "EC",
+    difficulty: "medium",
+    testId: null,
+    blueprint: null,
+  });
+
+  // =========================
+  // STAGE-6C (Main start with difficulty)
+  // =========================
+  const [mainDifficulty, setMainDifficulty] = useState("medium"); // easy|medium|hard
+  const [startingMain, setStartingMain] = useState(false);
 
   // STAGE-6B (AI Subject Generate)
   const [aiGen, setAiGen] = useState(null);
@@ -70,9 +82,7 @@ export default function App() {
         <b style={{ fontSize: 16 }}>GATE ECE Mock Platform</b>
 
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          {isAuthed && (
-            <span style={{ opacity: 0.75, fontSize: 13 }}>{email || "—"}</span>
-          )}
+          {isAuthed && <span style={{ opacity: 0.75, fontSize: 13 }}>{email || "—"}</span>}
 
           {isAuthed ? (
             <>
@@ -110,6 +120,14 @@ export default function App() {
                   setBlueprint(null);
                   setScreen("dashboard");
                   setAiGen(null);
+                  setExamQuestions([]);
+                  setExamMeta({
+                    mode: "main",
+                    subject: "EC",
+                    difficulty: "medium",
+                    testId: null,
+                    blueprint: null,
+                  });
                 }}
                 style={{
                   padding: "7px 10px",
@@ -130,34 +148,75 @@ export default function App() {
     );
   }, [isAuthed, email, clearSession, token, blueprint]);
 
-  // Start MAIN: 65 questions
+  // =========================
+  // STAGE-6C: Start MAIN via backend orchestration
+  // POST /api/test/start-main { difficulty }
+  // Expected response: { testId, questions, blueprint }
+  // =========================
   async function onStartMain() {
+    if (!token) return;
+
+    setStartingMain(true);
     try {
-      const data = await apiFetch(`/test/generate?count=65&subjects=EC`, { token });
+      // Stage-6C path
+      const data = await apiFetch("/test/start-main", {
+        token,
+        method: "POST",
+        body: { difficulty: mainDifficulty },
+      });
+
       const qs = data?.questions || [];
-      if (!qs.length) throw new Error("No questions returned");
+      if (!Array.isArray(qs) || qs.length === 0) {
+        // Fallback to old behavior if backend not fully implemented yet
+        const fallback = await apiFetch(`/test/generate?count=65&subjects=EC`, { token });
+        const fqs = fallback?.questions || [];
+        if (!fqs.length) throw new Error("No questions returned");
+        setExamQuestions(fqs);
+        setExamMeta({
+          mode: "main",
+          subject: "EC",
+          difficulty: mainDifficulty,
+          testId: null,
+          blueprint: null,
+        });
+        setScreen("exam");
+        return;
+      }
 
       setExamQuestions(qs);
-      setExamMeta({ mode: "main", subject: "EC" });
+      setExamMeta({
+        mode: "main",
+        subject: "EC",
+        difficulty: mainDifficulty,
+        testId: data?.testId ?? null,
+        blueprint: data?.blueprint ?? null,
+      });
       setScreen("exam");
     } catch (e) {
-      alert(e?.message || "Failed to start test");
+      alert(e?.message || "Failed to start main test");
+    } finally {
+      setStartingMain(false);
     }
   }
 
-  // Start SUBJECT-WISE: 65 from a chosen subject label
+  // Start SUBJECT-WISE: (existing DB bank path)
   async function onStartSubject(subject) {
     try {
       const subj = subject || "EC";
-      const data = await apiFetch(
-        `/test/generate?count=65&subjects=${encodeURIComponent(subj)}`,
-        { token }
-      );
+      const data = await apiFetch(`/test/generate?count=65&subjects=${encodeURIComponent(subj)}`, {
+        token,
+      });
       const qs = data?.questions || [];
       if (!qs.length) throw new Error("No questions returned");
 
       setExamQuestions(qs);
-      setExamMeta({ mode: "subject", subject: subj });
+      setExamMeta({
+        mode: "subject",
+        subject: subj,
+        difficulty: null,
+        testId: null,
+        blueprint: null,
+      });
       setScreen("exam");
     } catch (e) {
       alert(e?.message || "Failed to start test");
@@ -169,7 +228,17 @@ export default function App() {
       await apiFetch("/test/submit", {
         token,
         method: "POST",
-        body: { score, accuracy, answers, totalQuestions },
+        body: {
+          score,
+          accuracy,
+          answers,
+          totalQuestions,
+          mode: examMeta?.mode || "main",
+          subject: examMeta?.subject || null,
+          // testId is not used by your current /test/submit handler,
+          // but sending it is harmless and future-proof if you add support later.
+          testId: examMeta?.testId ?? null,
+        },
       });
 
       // refresh history
@@ -195,7 +264,7 @@ export default function App() {
         subject,
         topic,
         count,
-        difficulty, // ✅ critical for Stage-6B
+        difficulty, // Stage-6B
       };
 
       const data = await apiFetch("/ai/generate", {
@@ -266,7 +335,12 @@ export default function App() {
       {screen === "dashboard" ? (
         <Dashboard
           history={loadingHistory ? [] : history}
+          // Stage-6C props for Main start UI:
           onStartMain={onStartMain}
+          mainDifficulty={mainDifficulty}
+          setMainDifficulty={setMainDifficulty}
+          startingMain={startingMain}
+          // Subject wise start:
           onStartSubject={onStartSubject}
           // Stage-6B props:
           aiGen={aiGen}

@@ -3,12 +3,12 @@ import React, { useMemo, useState } from "react";
 
 /**
  * Stage-6B (Option A):
- * Add AI Subject Generation controls:
- * - difficulty dropdown (easy/medium/hard)
- * - call /api/ai/generate with difficulty in body
- * - show response + optional Import button
+ * - AI Subject Generator difficulty dropdown (easy/medium/hard)
  *
- * Existing Stage-4/5 flows remain unchanged.
+ * Stage-6C (Main start):
+ * - Difficulty dropdown beside "Start Main Mock (65)"
+ * - When clicked, show buffering overlay while backend generates/picks questions
+ * - Calls onStartMain({ difficulty })
  */
 
 function clamp(n, a, b) {
@@ -69,8 +69,79 @@ const SUBJECTS = [
   "Engineering Mathematics",
 ];
 
+function normalizeDifficulty(v) {
+  const x = String(v || "").toLowerCase().trim();
+  return x === "easy" || x === "medium" || x === "hard" ? x : "medium";
+}
+
+function BufferingOverlay({ title = "Generating questions…", subtitle = "Please wait" }) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15,23,42,0.35)",
+        display: "grid",
+        placeItems: "center",
+        zIndex: 9999,
+        padding: 16,
+      }}
+    >
+      <div
+        style={{
+          width: "min(520px, 92vw)",
+          background: "white",
+          border: "1px solid rgba(0,0,0,0.12)",
+          borderRadius: 16,
+          boxShadow: "0 20px 50px rgba(15, 23, 42, 0.18)",
+          padding: 18,
+        }}
+      >
+        <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>{title}</div>
+        <div style={{ fontSize: 13, opacity: 0.75, marginBottom: 14 }}>{subtitle}</div>
+
+        {/* “YouTube buffering” vibe: shimmer bar */}
+        <div
+          style={{
+            height: 10,
+            borderRadius: 999,
+            overflow: "hidden",
+            background: "rgba(0,0,0,0.06)",
+            border: "1px solid rgba(0,0,0,0.08)",
+          }}
+        >
+          <div
+            style={{
+              height: "100%",
+              width: "40%",
+              borderRadius: 999,
+              background:
+                "linear-gradient(90deg, rgba(17,24,39,0.08), rgba(17,24,39,0.30), rgba(17,24,39,0.08))",
+              animation: "shimmer 1.1s linear infinite",
+            }}
+          />
+        </div>
+
+        <div style={{ marginTop: 12, fontSize: 12, opacity: 0.65 }}>
+          This can take some time when AI has to generate new questions.
+        </div>
+
+        <style>{`
+          @keyframes shimmer {
+            0% { transform: translateX(-60%); }
+            100% { transform: translateX(260%); }
+          }
+        `}</style>
+      </div>
+    </div>
+  );
+}
+
 export default function Dashboard({
   history = [],
+
+  // Stage-6C: expect onStartMain({ difficulty })
+  // (If you still pass a no-arg function, this code still works, but difficulty won't be used)
   onStartMain = () => {},
   onStartSubject = (_subject) => {},
 
@@ -84,6 +155,10 @@ export default function Dashboard({
   // type selector: "main" or "subject"
   const [mode, setMode] = useState("main");
   const [subject, setSubject] = useState("Networks"); // used in subject mode
+
+  // Stage-6C (Main start difficulty + buffering overlay)
+  const [mainDifficulty, setMainDifficulty] = useState("medium"); // easy|medium|hard
+  const [startingMain, setStartingMain] = useState(false);
 
   // Stage-6B (AI subject generation inputs)
   const [aiSubject, setAiSubject] = useState("Networks");
@@ -138,6 +213,28 @@ export default function Dashboard({
 
   const hasData = filteredHistory.length > 0;
 
+  async function handleStartMain() {
+    try {
+      setStartingMain(true);
+      const diff = normalizeDifficulty(mainDifficulty);
+
+      // Supports both signatures:
+      // - onStartMain() old
+      // - onStartMain({difficulty}) new for Stage-6C
+      const maybePromise =
+        onStartMain.length >= 1 ? onStartMain({ difficulty: diff }) : onStartMain();
+
+      // If it returns a promise, await it
+      if (maybePromise && typeof maybePromise.then === "function") {
+        await maybePromise;
+      }
+    } catch (e) {
+      alert(e?.message || "Failed to start main test");
+    } finally {
+      setStartingMain(false);
+    }
+  }
+
   async function handleAIGenerate() {
     if (!onAIGenerateSubject) {
       alert("AI generate handler missing (frontend wiring bug)");
@@ -184,6 +281,13 @@ export default function Dashboard({
 
   return (
     <div className="dashWrap">
+      {startingMain ? (
+        <BufferingOverlay
+          title="Generating questions for Main Mock (65)…"
+          subtitle={`Difficulty: ${normalizeDifficulty(mainDifficulty)} • Please wait while we prepare your test`}
+        />
+      ) : null}
+
       {/* TOP TILE */}
       <section className="tile">
         <div className="tileHeader">
@@ -268,11 +372,33 @@ export default function Dashboard({
       <section className="tile">
         <h2>Start a test</h2>
 
-        <div className="startRow">
+        <div className="startRow" style={{ alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           {mode === "main" ? (
-            <button className="primaryBtn" onClick={onStartMain} type="button">
-              Start Main Mock (65)
-            </button>
+            <>
+              <button
+                className="primaryBtn"
+                onClick={handleStartMain}
+                type="button"
+                disabled={startingMain}
+                title="Starts a Main mock using difficulty + AI/DB logic (Stage-6C)"
+              >
+                {startingMain ? "Starting…" : "Start Main Mock (65)"}
+              </button>
+
+              <label style={{ display: "grid", gap: 4 }}>
+                <span style={{ fontSize: 12, opacity: 0.75 }}>Difficulty</span>
+                <select
+                  className="sel"
+                  value={mainDifficulty}
+                  onChange={(e) => setMainDifficulty(e.target.value)}
+                  disabled={startingMain}
+                >
+                  <option value="easy">easy</option>
+                  <option value="medium">medium</option>
+                  <option value="hard">hard</option>
+                </select>
+              </label>
+            </>
           ) : (
             <button className="primaryBtn" onClick={() => onStartSubject(subject)} type="button">
               Start {subject} Mock (65)
@@ -328,11 +454,7 @@ export default function Dashboard({
 
             <label style={{ display: "grid", gap: 4 }}>
               <span style={{ fontSize: 12, opacity: 0.75 }}>Difficulty</span>
-              <select
-                className="sel"
-                value={aiDifficulty}
-                onChange={(e) => setAiDifficulty(e.target.value)}
-              >
+              <select className="sel" value={aiDifficulty} onChange={(e) => setAiDifficulty(e.target.value)}>
                 <option value="easy">easy</option>
                 <option value="medium">medium</option>
                 <option value="hard">hard</option>
@@ -372,9 +494,17 @@ export default function Dashboard({
                 {aiPreview ? (
                   <div style={{ display: "grid", gap: 8 }}>
                     {aiPreview.map((p) => (
-                      <div key={p.i} style={{ padding: 10, border: "1px solid rgba(0,0,0,0.08)", borderRadius: 12 }}>
+                      <div
+                        key={p.i}
+                        style={{
+                          padding: 10,
+                          border: "1px solid rgba(0,0,0,0.08)",
+                          borderRadius: 12,
+                        }}
+                      >
                         <div style={{ fontSize: 12, opacity: 0.75 }}>
-                          #{p.i + 1} • <b>{p.type}</b> • difficulty=<b>{p.difficulty ?? "—"}</b> • {p.subject} • {p.topic}
+                          #{p.i + 1} • <b>{p.type}</b> • difficulty=<b>{p.difficulty ?? "—"}</b> •{" "}
+                          {p.subject} • {p.topic}
                         </div>
                         <div style={{ marginTop: 6, fontSize: 13 }}>{p.question}</div>
                       </div>
