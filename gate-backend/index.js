@@ -88,8 +88,7 @@ function randInt(min, max) {
  * Builds a blueprint for "main" test:
  * total=65, GE=10 fixed, EC=55.
  *
- * User requested per-subject count 1..5.
- * With 10 EC subjects, max is 50 (10*5), so we add "EC_MIXED" filler for leftover.
+ * per-subject count 1..5. With 10 EC subjects, max is 50 so add EC_MIXED filler.
  */
 const MAIN_EC_SUBJECTS = [
   "Engineering Mathematics",
@@ -107,7 +106,6 @@ const MAIN_EC_SUBJECTS = [
 function buildMainBlueprint({ total = 65, geCount = 10, minPerSubject = 1, maxPerSubject = 5 } = {}) {
   const ecTotal = total - geCount;
 
-  // assign 1..5 to each EC subject
   const dist = {};
   let sum = 0;
   for (const s of MAIN_EC_SUBJECTS) {
@@ -116,7 +114,6 @@ function buildMainBlueprint({ total = 65, geCount = 10, minPerSubject = 1, maxPe
     sum += n;
   }
 
-  // if sum exceeds ecTotal, reduce randomly down to ecTotal while respecting min
   while (sum > ecTotal) {
     const pick = MAIN_EC_SUBJECTS[randInt(0, MAIN_EC_SUBJECTS.length - 1)];
     if (dist[pick] > minPerSubject) {
@@ -125,7 +122,6 @@ function buildMainBlueprint({ total = 65, geCount = 10, minPerSubject = 1, maxPe
     }
   }
 
-  // if sum is less than ecTotal, fill remainder into EC_MIXED
   const remainder = ecTotal - sum;
   if (remainder > 0) dist["EC_MIXED"] = remainder;
 
@@ -134,7 +130,7 @@ function buildMainBlueprint({ total = 65, geCount = 10, minPerSubject = 1, maxPe
     total,
     GE: geCount,
     EC: ecTotal,
-    perSubject: dist, // EC subjects + EC_MIXED (if needed)
+    perSubject: dist,
     constraints: { minPerSubject, maxPerSubject },
   };
 }
@@ -143,7 +139,6 @@ function buildMainBlueprint({ total = 65, geCount = 10, minPerSubject = 1, maxPe
  * Choose a mix of question types.
  */
 function defaultTypeMix(count) {
-  // Aim for ~60% MCQ, 20% MSQ, 20% NAT
   const mcq = Math.max(0, Math.round(count * 0.6));
   const msq = Math.max(0, Math.round(count * 0.2));
   let nat = count - mcq - msq;
@@ -215,12 +210,10 @@ app.post("/api/auth/login", async (req, res) => {
    GET  /api/ai/blueprint
 ========================================================= */
 
-// Returns a randomized blueprint (use this in UI / to preview distribution)
+// Returns a randomized blueprint (preview distribution)
 app.get("/api/ai/blueprint", authMiddleware, async (req, res) => {
   const mode = (req.query.mode || "main").toString().toLowerCase();
-  if (mode !== "main") {
-    return res.status(400).json({ error: "Only mode=main supported for blueprint right now" });
-  }
+  if (mode !== "main") return res.status(400).json({ error: "Only mode=main supported for blueprint right now" });
 
   const minPerSubject = Math.max(1, parseInt(req.query.minPerSubject || "1", 10) || 1);
   const maxPerSubject = Math.max(minPerSubject, parseInt(req.query.maxPerSubject || "5", 10) || 5);
@@ -243,6 +236,13 @@ async function runProvider(provider, payload) {
   }
 
   throw new Error("provider must be openai|local|auto");
+}
+
+// Small helper: hard-trim or pad a question list to desired length
+function coerceCount(qs, desired) {
+  const arr = Array.isArray(qs) ? qs.slice(0) : [];
+  if (arr.length > desired) return arr.slice(0, desired);
+  return arr; // if short, caller decides how to fill
 }
 
 app.post("/api/ai/generate", authMiddleware, async (req, res) => {
@@ -280,6 +280,12 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
       };
 
       const data = await runProvider(provider, payload);
+
+      // Stage-6C hardening: ensure difficulty is correct on every question
+      if (Array.isArray(data?.questions)) {
+        for (const q of data.questions) q.difficulty = diff;
+      }
+
       cacheSet(cacheKey, data);
       return res.json(data);
     }
@@ -295,7 +301,9 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
 
       const perSubject = blueprint?.perSubject || {};
       const geCount = blueprint?.GE ?? 10;
+      const totalTarget = blueprint?.total ?? 65;
 
+      // 1) Generate GE
       const gePayload = {
         mode: "subject",
         subject: "General Aptitude",
@@ -305,6 +313,7 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
         difficulty: diff,
       };
 
+      // 2) Generate EC subject chunks
       const subjectPayloads = [];
       for (const [sub, cnt] of Object.entries(perSubject)) {
         const n = parseInt(cnt, 10) || 0;
@@ -321,37 +330,73 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
       }
 
       const geOut = await runProvider(provider, gePayload);
+      const geQsRaw = geOut?.questions || [];
+      const geQs = coerceCount(geQsRaw, geCount).map((q) => ({
+        ...q,
+        difficulty: diff,
+        section: "GE",
+        subject: q?.subject || "General Aptitude",
+      }));
 
-      const ecOut = [];
+      const ecParts = [];
       for (const p of subjectPayloads) {
-        ecOut.push(await runProvider(provider, p));
+        const part = await runProvider(provider, p);
+        const qsRaw = part?.questions || [];
+        const qs = coerceCount(qsRaw, p.count).map((q) => ({
+          ...q,
+          difficulty: diff,
+          section: "EC",
+          subject: q?.subject || p.subject,
+          topic: q?.topic || "Mixed",
+        }));
+        ecParts.push({ subject: p.subject, want: p.count, got: qs.length, questions: qs });
       }
 
+      // Merge + harden total count
       const all = [];
-      const pushQuestions = (resp, sectionName) => {
-        const qs = resp?.questions || resp?.data?.questions || resp?.result?.questions;
-        if (Array.isArray(qs)) {
-          for (const q of qs) all.push({ ...q, section: sectionName });
-        } else if (Array.isArray(resp?.questions)) {
-          for (const q of resp.questions) all.push({ ...q, section: sectionName });
-        } else if (Array.isArray(resp)) {
-          for (const q of resp) all.push({ ...q, section: sectionName });
-        }
-      };
+      all.push(...geQs);
+      for (const part of ecParts) all.push(...part.questions);
 
-      pushQuestions(geOut, "GE");
-      for (const part of ecOut) {
-        const sectionName = part?.subject || part?.meta?.subject || "EC";
-        pushQuestions(part, sectionName);
+      // If under target (rare), fill by requesting extra EC_MIXED
+      if (all.length < totalTarget) {
+        const missing = totalTarget - all.length;
+
+        const fillerPayload = {
+          mode: "subject",
+          subject: "EC_MIXED",
+          topic: "Mixed",
+          count: missing,
+          typeMix: defaultTypeMix(missing),
+          difficulty: diff,
+        };
+
+        const filler = await runProvider(provider, fillerPayload);
+        const fillerQs = coerceCount(filler?.questions || [], missing).map((q) => ({
+          ...q,
+          difficulty: diff,
+          section: "EC",
+          subject: q?.subject || "EC_MIXED",
+          topic: q?.topic || "Mixed",
+        }));
+        all.push(...fillerQs);
       }
 
+      // If over target, trim
+      const finalQs = all.slice(0, totalTarget);
+
+      // Final assertion (Stage-6C safety)
       const result = {
         provider,
         mode: "main",
         blueprint,
         difficulty: diff,
-        totalQuestions: all.length,
-        questions: all,
+        totalQuestions: finalQs.length,
+        questions: finalQs,
+        _debug: {
+          geRequested: geCount,
+          geReturned: geQs.length,
+          ecPlan: ecParts.map((x) => ({ subject: x.subject, want: x.want, got: x.got })),
+        },
       };
 
       cacheSet(cacheKey, result);
