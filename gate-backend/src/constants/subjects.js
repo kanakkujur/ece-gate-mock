@@ -1,7 +1,7 @@
+// FILE: gate-backend/src/constants/subjects.js
+
 export const SUBJECTS = {
-  GE: [
-    "General Aptitude",
-  ],
+  GE: ["General Aptitude"],
 
   EC: [
     "Engineering Mathematics",
@@ -17,6 +17,10 @@ export const SUBJECTS = {
   ],
 };
 
+// ✅ Named exports your other files can import directly
+export const GE_SUBJECTS = SUBJECTS.GE;
+export const EC_SUBJECTS = SUBJECTS.EC;
+
 // Helpful derived helpers
-export const EC_SUBJECT_SET = new Set(SUBJECTS.EC);
-export const ALL_SUBJECTS = [...SUBJECTS.GE, ...SUBJECTS.EC];
+export const EC_SUBJECT_SET = new Set(EC_SUBJECTS);
+export const ALL_SUBJECTS = [...GE_SUBJECTS, ...EC_SUBJECTS];

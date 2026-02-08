@@ -1,11 +1,11 @@
-// src/randomizer.js
+// FILE: gate-backend/src/randomizer.js
 import crypto from "crypto";
 
 /**
  * Default EC subject buckets used in "main" paper generation.
  * Keep these aligned with whatever you show on UI.
  */
-import { EC_SUBJECTS } from "./subjects.js";
+import { EC_SUBJECTS } from "./constants/subjects.js";
 
 export const EC_SUBJECTS_DEFAULT = EC_SUBJECTS;
 
