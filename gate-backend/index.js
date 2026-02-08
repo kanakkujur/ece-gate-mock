@@ -7,11 +7,20 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import pg from "pg";
 import crypto from "crypto";
-import { GE_SUBJECTS, EC_SUBJECTS } from "./src/constants/subjects.js";
+
+import { SUBJECTS } from "./src/constants/subjects.js";
+import { ensureStage7Schema } from "./src/dbEnsure.js";
+import { evaluateAttempt } from "./src/evaluator.js";
+import { computeScoreSummary, maxScoreFromQuestions } from "./src/scoring.js";
+import { buildMainPaperPlan } from "./src/randomizer.js";
+import {
+  buildAnalyticsOverview,
+  buildWeaknessReport,
+  recommendationsFromWeaknessReport,
+} from "./src/analytics.js";
 
 import { generateQuestions as generateOpenAIQuestions } from "./aiProviders/openai.js";
 import { generateQuestions as generateLocalQuestions } from "./aiProviders/local.js";
-import { buildMainPaperPlan } from "./src/randomizer.js";
 
 const { Pool } = pg;
 const app = express();
@@ -27,6 +36,9 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+// Ensure Stage-7 schema bits exist (safe for local dev)
+await ensureStage7Schema(pool);
 
 /* -------------------------
    Config
@@ -120,28 +132,11 @@ function oneLine(s, max = 160) {
 
 /* =========================================================
    Stage-6C Option B: Progress Jobs (polling)
-   In-memory store (OK for localhost). For prod: DB/Redis.
 ========================================================= */
 const progressJobs = new Map();
-/**
- * jobId -> {
- *   status: "running"|"done"|"error",
- *   percent: number (0..100),
- *   step: string,
- *   startedAt: number,
- *   updatedAt: number,
- *   generatedInserted?: number,
- *   generatedTarget?: number,
- *   generatedBucketsDone?: number,
- *   generatedBucketsTotal?: number,
- *   result?: any,
- *   error?: string
- * }
- */
 function newJobId() {
   return `job_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
-
 function jobSet(jobId, patch) {
   const cur = progressJobs.get(jobId) || {
     status: "running",
@@ -226,7 +221,6 @@ function stableOptionsString(options) {
   for (const k of keys) obj[k] = String(options[k] ?? "").trim();
   return JSON.stringify(obj);
 }
-
 function normalizeAnswerForHash(type, answer) {
   const t = sanitizeType(type);
   if (t === "MSQ") {
@@ -241,10 +235,6 @@ function normalizeAnswerForHash(type, answer) {
   if (t === "NAT") return String(answer ?? "").trim();
   return String(answer ?? "").trim();
 }
-
-/**
- * question_hash includes difficulty+section+subject+topic+type+question+options+answer
- */
 function computeQuestionHash(q) {
   const section = normalizeSection(q.section || "EC");
   const difficulty = normalizeDifficulty(q.difficulty || "medium");
@@ -290,6 +280,11 @@ async function runProvider(provider, payload) {
    Health
 ========================================================= */
 app.get("/api", (req, res) => res.json({ status: "GATE backend running" }));
+
+/* =========================================================
+   CONSTANTS API
+========================================================= */
+app.get("/api/constants/subjects", authMiddleware, (req, res) => res.json(SUBJECTS));
 
 /* =========================================================
    AUTH
@@ -367,10 +362,6 @@ async function countAvailable({ section, subject, difficulty }) {
   return r.rows[0]?.c ?? 0;
 }
 
-/**
- * Bulk import with dedupe by question_hash.
- * Uses ON CONFLICT DO NOTHING.
- */
 async function importQuestionsWithDedupe(questions, { section, difficulty }) {
   const qs = Array.isArray(questions) ? questions : [];
   if (!qs.length) return { inserted: 0, ids: [] };
@@ -646,8 +637,7 @@ async function recordUsage({ userId, testId, questionIds }) {
 }
 
 /* =========================================================
-   Stage-6C: Start MAIN test with difficulty (Option B jobs)
-   POST /api/test/start-main { difficulty }
+   Stage-6C: Start MAIN test
 ========================================================= */
 app.post("/api/test/start-main", authMiddleware, async (req, res) => {
   const userId = req.user?.id;
@@ -678,7 +668,6 @@ app.post("/api/test/start-main", authMiddleware, async (req, res) => {
         addMixedBucket: true,
       });
 
-      // Build pool requirements list first (for target estimate)
       const reqs = [];
       const geNeedMin = Math.max(80, (blueprint.GE || 10) * 8);
       reqs.push({ section: "GE", subject: "General Aptitude", needMin: geNeedMin });
@@ -690,11 +679,7 @@ app.post("/api/test/start-main", authMiddleware, async (req, res) => {
         reqs.push({ section: "EC", subject: sub, needMin });
       }
 
-      jobSet(jobId, {
-        generatedBucketsTotal: reqs.length,
-        generatedBucketsDone: 0,
-      });
-
+      jobSet(jobId, { generatedBucketsTotal: reqs.length, generatedBucketsDone: 0 });
       jobSet(jobId, { percent: 10, step: "Estimating generation target" });
 
       let targetMissing = 0;
@@ -835,10 +820,25 @@ app.post("/api/test/start-main", authMiddleware, async (req, res) => {
         finalQs = finalQs.concat(fill.rows).slice(0, 65);
       }
 
+      jobSet(jobId, { percent: 90, step: "Persisting selected questions (Stage-7)" });
+
+      const questionIds = finalQs.map((q) => q.id).filter(Boolean);
+      const maxScore = maxScoreFromQuestions(finalQs);
+
+      await pool.query(
+        `
+        UPDATE public.test_sessions
+        SET question_ids = $2::int[],
+            questions = $3::jsonb,
+            max_score = $4
+        WHERE id = $1
+        `,
+        [testId, questionIds, JSON.stringify(finalQs), maxScore]
+      );
+
       jobSet(jobId, { percent: 92, step: "Recording question_usage rows" });
 
-      const qids = finalQs.map((x) => x.id).filter(Boolean);
-      await recordUsage({ userId, testId, questionIds: qids });
+      await recordUsage({ userId, testId, questionIds });
 
       jobSet(jobId, {
         percent: 100,
@@ -848,11 +848,7 @@ app.post("/api/test/start-main", authMiddleware, async (req, res) => {
       });
     } catch (e) {
       console.error("start-main job failed:", e);
-      jobSet(jobId, {
-        status: "error",
-        step: "Failed",
-        error: e?.message || String(e),
-      });
+      jobSet(jobId, { status: "error", step: "Failed", error: e?.message || String(e) });
     }
   })();
 });
@@ -863,16 +859,12 @@ app.get("/api/debug/db-stats", authMiddleware, async (req, res) => {
 
   const rows = await pool.query(
     `
-    SELECT
-      section,
-      subject,
-      difficulty,
-      COUNT(*)::int AS total
+    SELECT section, subject, difficulty, COUNT(*)::int AS total
     FROM public.questions
     WHERE difficulty = $1
     GROUP BY section, subject, difficulty
     ORDER BY section, subject
-  `,
+    `,
     [difficulty]
   );
 
@@ -972,14 +964,15 @@ app.get("/api/test/generate", authMiddleware, async (req, res) => {
 });
 
 /* =========================================================
-   TEST SESSION (Stage 4)
+   TEST SESSION (Stage 4 + Stage 7)
 ========================================================= */
 app.get("/api/test/active", authMiddleware, async (req, res) => {
   try {
     const userId = req.user?.id;
 
     const r = await pool.query(
-      `SELECT id, user_id, answers, remaining_time, is_submitted, mode, subject, totalquestions, created_at
+      `SELECT id, user_id, answers, remaining_time, is_submitted, mode, subject, totalquestions, created_at,
+              question_ids, questions, score, accuracy, eval, max_score
        FROM public.test_sessions
        WHERE user_id = $1 AND is_submitted = false
        ORDER BY created_at DESC
@@ -1040,61 +1033,162 @@ app.post("/api/test/autosave", authMiddleware, async (req, res) => {
   }
 });
 
+/**
+ * Stage-7A/7B/7C:
+ * Server-side evaluation + persistence
+ *
+ * POST /api/test/submit
+ * Body: { testId? , answers, remainingTime }
+ */
 app.post("/api/test/submit", authMiddleware, async (req, res) => {
+  const userId = req.user?.id;
+
   try {
-    const userId = req.user?.id;
+    const { testId: bodyTestId = null, answers = {}, remainingTime = 0 } = req.body || {};
 
-    const {
-      score = null,
-      accuracy = null,
-      answers = {},
-      totalQuestions = null,
-      mode = "main",
-      subject = null,
-      remainingTime = 0,
-    } = req.body || {};
-
-    const active = await pool.query(
-      `SELECT id
-       FROM public.test_sessions
-       WHERE user_id = $1 AND is_submitted = false
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [userId]
-    );
-
-    if (active.rows.length) {
-      const sid = active.rows[0].id;
-
-      const upd = await pool.query(
-        `UPDATE public.test_sessions
-         SET score = $2,
-             accuracy = $3,
-             answers = $4::jsonb,
-             totalquestions = COALESCE($5, totalquestions),
-             remaining_time = $6,
-             is_submitted = true,
-             mode = $7,
-             subject = $8
-         WHERE id = $1
-         RETURNING id`,
-        [sid, score, accuracy, JSON.stringify(answers), totalQuestions, remainingTime || 0, mode, subject]
+    let session;
+    if (bodyTestId != null) {
+      const r = await pool.query(
+        `SELECT id, user_id, answers, remaining_time, is_submitted, mode, subject, totalquestions, created_at,
+                question_ids, questions, max_score
+         FROM public.test_sessions
+         WHERE id=$1 AND user_id=$2
+         LIMIT 1`,
+        [Number(bodyTestId), userId]
       );
-
-      return res.json({ ok: true, id: upd.rows[0].id, action: "updated_active_submitted" });
+      session = r.rows[0];
+    } else {
+      const r = await pool.query(
+        `SELECT id, user_id, answers, remaining_time, is_submitted, mode, subject, totalquestions, created_at,
+                question_ids, questions, max_score
+         FROM public.test_sessions
+         WHERE user_id=$1 AND is_submitted=false
+         ORDER BY created_at DESC
+         LIMIT 1`,
+        [userId]
+      );
+      session = r.rows[0];
     }
 
-    const ins = await pool.query(
-      `INSERT INTO public.test_sessions (user_id, score, accuracy, answers, totalquestions, remaining_time, is_submitted, mode, subject, created_at)
-       VALUES ($1,$2,$3,$4::jsonb,$5,$6,true,$7,$8,now())
-       RETURNING id`,
-      [userId, score, accuracy, JSON.stringify(answers), totalQuestions, remainingTime || 0, mode, subject]
+    if (!session) return res.status(404).json({ error: bodyTestId ? "test not found" : "no active test" });
+
+    const effectiveAnswers = isPlainObject(answers) ? answers : (session.answers || {});
+    let questions = Array.isArray(session.questions) ? session.questions : [];
+
+    if (!questions.length) {
+      const qids = Array.isArray(session.question_ids) ? session.question_ids : [];
+      if (!qids.length) return res.status(400).json({ error: "No questions found for this session" });
+
+      const qrows = await pool.query(
+        `SELECT id, subject, topic, type, marks, neg_marks, question, options, answer, solution, source, year, paper, session, question_number, section, difficulty
+         FROM public.questions
+         WHERE id = ANY($1::int[])
+         ORDER BY array_position($1::int[], id)`,
+        [qids]
+      );
+      questions = qrows.rows;
+    }
+
+    const attempt = evaluateAttempt({
+      questions,
+      answers: effectiveAnswers,
+      natAbsTol: Number(process.env.NAT_ABS_TOL || "0.01"),
+      natRelTol: Number(process.env.NAT_REL_TOL || "0.001"),
+    });
+
+    const summary = computeScoreSummary({ questions, attempt });
+
+    await pool.query("BEGIN");
+
+    await pool.query(
+      `UPDATE public.test_sessions
+       SET score=$2,
+           accuracy=$3,
+           answers=$4::jsonb,
+           remaining_time=$5,
+           is_submitted=true,
+           eval=$6::jsonb,
+           max_score=COALESCE(max_score, $7)
+       WHERE id=$1`,
+      [session.id, summary.score, summary.accuracy, JSON.stringify(effectiveAnswers), remainingTime || 0, JSON.stringify({ summary, attempt }), summary.maxScore]
     );
 
-    return res.json({ ok: true, id: ins.rows[0].id, action: "inserted_submitted" });
+    // Bulk insert question_attempts
+    const rows = attempt.items.map((it) => ({
+      test_id: session.id,
+      user_id: userId,
+      question_id: it.questionId || null,
+      subject: it.subject,
+      topic: it.topic,
+      type: it.type,
+      is_correct: it.isCorrect,
+      is_skipped: it.isSkipped,
+      marks_awarded: it.marksAwarded,
+      neg_awarded: it.negAwarded,
+      answer_given: it.answerGiven == null ? null : JSON.stringify(it.answerGiven),
+      correct_answer: it.correctAnswer == null ? null : JSON.stringify(it.correctAnswer),
+    }));
+
+    if (rows.length) {
+      const cols = [
+        "test_id",
+        "user_id",
+        "question_id",
+        "subject",
+        "topic",
+        "type",
+        "is_correct",
+        "is_skipped",
+        "marks_awarded",
+        "neg_awarded",
+        "answer_given",
+        "correct_answer",
+      ];
+      const values = [];
+      const placeholders = rows.map((r, i) => {
+        const b = i * cols.length;
+        values.push(
+          r.test_id,
+          r.user_id,
+          r.question_id,
+          r.subject,
+          r.topic,
+          r.type,
+          r.is_correct,
+          r.is_skipped,
+          r.marks_awarded,
+          r.neg_awarded,
+          r.answer_given,
+          r.correct_answer
+        );
+        const ph = cols.map((_, j) => `$${b + j + 1}`);
+        return `(${ph.join(",")})`;
+      });
+
+      await pool.query(
+        `
+        INSERT INTO public.question_attempts (${cols.join(",")})
+        VALUES ${placeholders.join(",")}
+        ON CONFLICT (test_id, user_id, question_id) DO NOTHING
+        `,
+        values
+      );
+    }
+
+    await pool.query("COMMIT");
+
+    return res.json({
+      ok: true,
+      testId: session.id,
+      score: summary.score,
+      accuracy: summary.accuracy,
+      maxScore: summary.maxScore,
+      breakdown: summary.breakdown,
+    });
   } catch (e) {
+    try { await pool.query("ROLLBACK"); } catch {}
     console.error("Submit error:", e);
-    res.status(500).json({ error: "Failed to submit test" });
+    return res.status(500).json({ error: "Failed to submit test", detail: e?.message || String(e) });
   }
 });
 
@@ -1102,7 +1196,7 @@ app.get("/api/test/history", authMiddleware, async (req, res) => {
   try {
     const userId = req.user?.id;
     const r = await pool.query(
-      `SELECT id, user_id, score, accuracy, answers, totalquestions, mode, subject, remaining_time, is_submitted, created_at
+      `SELECT id, user_id, score, accuracy, answers, totalquestions, mode, subject, remaining_time, is_submitted, created_at, max_score
        FROM public.test_sessions
        WHERE user_id=$1
        ORDER BY created_at DESC`,
@@ -1112,6 +1206,87 @@ app.get("/api/test/history", authMiddleware, async (req, res) => {
   } catch (e) {
     console.error("History error:", e);
     res.status(500).json({ error: "Failed to fetch history" });
+  }
+});
+
+/* =========================================================
+   Stage-7D: Review API
+========================================================= */
+app.get("/api/test/:id/review", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const testId = Number(req.params.id);
+    if (!Number.isFinite(testId)) return res.status(400).json({ error: "invalid test id" });
+
+    const r = await pool.query(
+      `SELECT id, user_id, score, accuracy, answers, totalquestions, mode, subject, remaining_time, is_submitted,
+              created_at, questions, question_ids, eval, max_score
+       FROM public.test_sessions
+       WHERE id=$1 AND user_id=$2
+       LIMIT 1`,
+      [testId, userId]
+    );
+    const sess = r.rows[0];
+    if (!sess) return res.status(404).json({ error: "test not found" });
+
+    if (!sess.eval && Array.isArray(sess.questions) && sess.questions.length) {
+      const attempt = evaluateAttempt({
+        questions: sess.questions,
+        answers: sess.answers || {},
+        natAbsTol: Number(process.env.NAT_ABS_TOL || "0.01"),
+        natRelTol: Number(process.env.NAT_REL_TOL || "0.001"),
+      });
+      const summary = computeScoreSummary({ questions: sess.questions, attempt });
+      sess.eval = { summary, attempt };
+    }
+
+    res.json(sess);
+  } catch (e) {
+    console.error("Review error:", e);
+    res.status(500).json({ error: "Failed to load review", detail: e?.message || String(e) });
+  }
+});
+
+/* =========================================================
+   Stage-7E: Analytics queries
+========================================================= */
+app.get("/api/analytics/overview", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const days = Math.max(1, Math.min(parseInt(req.query.days || "30", 10) || 30, 365));
+    const out = await buildAnalyticsOverview(pool, { userId, days });
+    res.json(out);
+  } catch (e) {
+    console.error("Analytics overview error:", e);
+    res.status(500).json({ error: "Failed analytics overview", detail: e?.message || String(e) });
+  }
+});
+
+app.get("/api/analytics/weakness", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const days = Math.max(1, Math.min(parseInt(req.query.days || "30", 10) || 30, 365));
+    const out = await buildWeaknessReport(pool, { userId, days });
+    res.json(out);
+  } catch (e) {
+    console.error("Analytics weakness error:", e);
+    res.status(500).json({ error: "Failed analytics weakness", detail: e?.message || String(e) });
+  }
+});
+
+/* =========================================================
+   Stage-7F: Intelligence hooks (rule-based)
+========================================================= */
+app.get("/api/intel/recommendations", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const days = Math.max(1, Math.min(parseInt(req.query.days || "30", 10) || 30, 365));
+    const report = await buildWeaknessReport(pool, { userId, days });
+    const recommendations = recommendationsFromWeaknessReport(report);
+    res.json({ days, recommendations, report });
+  } catch (e) {
+    console.error("Intel error:", e);
+    res.status(500).json({ error: "Failed intel recommendations", detail: e?.message || String(e) });
   }
 });
 
