@@ -3109,6 +3109,8 @@ https://raw.githubusercontent.com/kanakkujur/ece-gate-mock/test_t1/gate-frontend
 https://raw.githubusercontent.com/kanakkujur/ece-gate-mock/test_t1/gate-frontend/src/utils/natCheck.js
 https://raw.githubusercontent.com/kanakkujur/ece-gate-mock/test_t1/gate-frontend/vite.config.js
 https://raw.githubusercontent.com/kanakkujur/ece-gate-mock/test_t1/github_raw_urls.txt
+https://raw.githubusercontent.com/kanakkujur/ece-gate-mock/test_t1/github_raw_urls_test_t1.txt
+https://raw.githubusercontent.com/kanakkujur/ece-gate-mock/test_t1/job_test_invoking.sh
 https://raw.githubusercontent.com/kanakkujur/ece-gate-mock/test_t1/make_raw_links.bat
 https://raw.githubusercontent.com/kanakkujur/ece-gate-mock/test_t1/schema.sql
 https://raw.githubusercontent.com/kanakkujur/ece-gate-mock/test_t1/schema_only_tables.sql

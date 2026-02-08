@@ -5,18 +5,9 @@ import crypto from "crypto";
  * Default EC subject buckets used in "main" paper generation.
  * Keep these aligned with whatever you show on UI.
  */
-export const EC_SUBJECTS_DEFAULT = [
-  "Engineering Mathematics",
-  "Networks",
-  "Signals & Systems",
-  "Electronic Devices",
-  "Analog Circuits",
-  "Digital Circuits",
-  "Control Systems",
-  "Communication Systems",
-  "Electromagnetics",
-  "Computer Organization",
-];
+import { EC_SUBJECTS } from "./subjects.js";
+
+export const EC_SUBJECTS_DEFAULT = EC_SUBJECTS;
 
 /* -------------------------
    Deterministic RNG (seeded)

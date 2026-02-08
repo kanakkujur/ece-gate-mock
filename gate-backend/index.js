@@ -7,6 +7,7 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import pg from "pg";
 import crypto from "crypto";
+import { GE_SUBJECTS, EC_SUBJECTS } from "./src/subjects.js";
 
 import { generateQuestions as generateOpenAIQuestions } from "./aiProviders/openai.js";
 import { generateQuestions as generateLocalQuestions } from "./aiProviders/local.js";
@@ -856,6 +857,30 @@ app.post("/api/test/start-main", authMiddleware, async (req, res) => {
     }
   })();
 });
+
+// GET /api/debug/db-stats
+app.get("/api/debug/db-stats", authMiddleware, async (req, res) => {
+  const difficulty = normalizeDifficulty(req.query.difficulty || "medium");
+
+  const rows = await pool.query(`
+    SELECT
+      section,
+      subject,
+      difficulty,
+      COUNT(*)::int AS total
+    FROM public.questions
+    WHERE difficulty = $1
+    GROUP BY section, subject, difficulty
+    ORDER BY section, subject
+  `, [difficulty]);
+
+  res.json({
+    difficulty,
+    total: rows.rows.reduce((a, r) => a + r.total, 0),
+    buckets: rows.rows
+  });
+});
+
 
 /* =========================================================
    /api/ai/generate  (subject only)
