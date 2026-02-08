@@ -63,9 +63,7 @@ function authMiddleware(req, res, next) {
 
 // ----------- Simple TTL Cache (in-memory) -----------
 const aiCache = new Map();
-/**
- * key -> { expiresAt:number, value:any }
- */
+/** key -> { expiresAt:number, value:any } */
 function cacheGet(key) {
   const v = aiCache.get(key);
   if (!v) return null;
@@ -79,40 +77,29 @@ function cacheSet(key, value) {
   aiCache.set(key, { expiresAt: Date.now() + AI_CACHE_TTL_MS, value });
 }
 
-// ----------- Random helpers -----------
-function randInt(min, max) {
-  // inclusive
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
+// ----------- Normalize helpers -----------
 function normalizeDifficulty(v) {
   const x = String(v || "").toLowerCase().trim();
   return x === "easy" || x === "medium" || x === "hard" ? x : "medium";
 }
-
 function normalizeSection(v) {
   const x = String(v || "").toUpperCase().trim();
   return x === "GE" || x === "EC" ? x : "EC";
 }
-
 function sanitizeType(t) {
   const x = String(t || "").toUpperCase();
   if (x === "MCQ" || x === "MSQ" || x === "NAT") return x;
   return "MCQ";
 }
-
 function asNum(v, def) {
   const n = Number(v);
   return Number.isFinite(n) ? n : def;
 }
-
 function isPlainObject(x) {
   return x && typeof x === "object" && !Array.isArray(x);
 }
 
-/**
- * Choose a mix of question types.
- */
+/** Choose a mix of question types */
 function defaultTypeMix(count) {
   const mcq = Math.max(0, Math.round(count * 0.6));
   const msq = Math.max(0, Math.round(count * 0.2));
@@ -121,61 +108,117 @@ function defaultTypeMix(count) {
   return { MCQ: mcq, MSQ: msq, NAT: nat };
 }
 
-/* -------------------------
-   MAIN paper blueprint (legacy helper)
-------------------------- */
-const MAIN_EC_SUBJECTS = [
-  "Engineering Mathematics",
-  "Networks",
-  "Signals and Systems",
-  "Electronic Devices",
-  "Analog Circuits",
-  "Digital Electronics",
-  "Control Systems",
-  "Communication",
-  "Electromagnetics",
-  "Computer Organization",
-];
+/** Force strings to single-line (prevents console wrapping due to embedded newlines/tabs) */
+function oneLine(s, max = 160) {
+  return String(s ?? "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .slice(0, max)
+    .trim();
+}
 
-function buildMainBlueprint({ total = 65, geCount = 10, minPerSubject = 1, maxPerSubject = 5 } = {}) {
-  const ecTotal = total - geCount;
+/* =========================================================
+   Stage-6C Option B: Progress Jobs (polling)
+   In-memory store (OK for localhost). For prod: DB/Redis.
+========================================================= */
+const progressJobs = new Map();
+/**
+ * jobId -> {
+ *   status: "running"|"done"|"error",
+ *   percent: number (0..100),
+ *   step: string,
+ *   startedAt: number,
+ *   updatedAt: number,
+ *   generatedInserted?: number,
+ *   generatedTarget?: number,
+ *   generatedBucketsDone?: number,
+ *   generatedBucketsTotal?: number,
+ *   result?: any,
+ *   error?: string
+ * }
+ */
+function newJobId() {
+  return `job_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
 
-  const dist = {};
-  let sum = 0;
-  for (const s of MAIN_EC_SUBJECTS) {
-    const n = randInt(minPerSubject, maxPerSubject);
-    dist[s] = n;
-    sum += n;
+function jobSet(jobId, patch) {
+  const cur = progressJobs.get(jobId) || {
+    status: "running",
+    percent: 0,
+    step: "starting",
+    startedAt: Date.now(),
+    updatedAt: Date.now(),
+    generatedInserted: 0,
+    generatedTarget: 0,
+    generatedBucketsDone: 0,
+    generatedBucketsTotal: 0,
+  };
+
+  const next = {
+    ...cur,
+    ...patch,
+    step: oneLine(patch.step ?? cur.step),
+    updatedAt: Date.now(),
+  };
+
+  if (typeof next.percent === "number") {
+    next.percent = Math.max(0, Math.min(100, next.percent));
   }
 
-  while (sum > ecTotal) {
-    const pick = MAIN_EC_SUBJECTS[randInt(0, MAIN_EC_SUBJECTS.length - 1)];
-    if (dist[pick] > minPerSubject) {
-      dist[pick] -= 1;
-      sum -= 1;
+  for (const k of [
+    "generatedInserted",
+    "generatedTarget",
+    "generatedBucketsDone",
+    "generatedBucketsTotal",
+  ]) {
+    next[k] = Math.max(0, Number(next[k]) || 0);
+  }
+
+  progressJobs.set(jobId, next);
+  return next;
+}
+
+
+// cleanup old jobs (keep 30 mins)
+setInterval(() => {
+  const now = Date.now();
+  for (const [jobId, j] of progressJobs.entries()) {
+    if (now - (j.updatedAt || j.startedAt || now) > 30 * 60 * 1000) {
+      progressJobs.delete(jobId);
     }
   }
+}, 60 * 1000);
 
-  const remainder = ecTotal - sum;
-  if (remainder > 0) dist["EC_MIXED"] = remainder;
+// Poll status: GET /api/test/start-main/status?jobId=...
+app.get("/api/test/start-main/status", authMiddleware, async (req, res) => {
+  const jobId = String(req.query.jobId || "").trim();
+  if (!jobId) return res.status(400).json({ error: "jobId is required" });
 
-  return {
-    mode: "main",
-    total,
-    GE: geCount,
-    EC: ecTotal,
-    perSubject: dist,
-    constraints: { minPerSubject, maxPerSubject },
+  const j = progressJobs.get(jobId);
+  if (!j) return res.status(404).json({ error: "job not found" });
+
+  const out = {
+    jobId,
+    status: j.status,
+    percent: j.percent,
+    step: j.step,
+    startedAt: j.startedAt,
+    updatedAt: j.updatedAt,
+    generatedInserted: j.generatedInserted || 0,
+    generatedTarget: j.generatedTarget || 0,
+    generatedBucketsDone: j.generatedBucketsDone || 0,
+    generatedBucketsTotal: j.generatedBucketsTotal || 0,
   };
-}
+
+  if (j.status === "done") out.result = j.result;
+  if (j.status === "error") out.error = j.error;
+
+  return res.json(out);
+});
 
 /* =========================================================
    DEDUPE HASH (Stage-6C)
 ========================================================= */
-
-/**
- * Stable stringify for options map (A,B,C,D,E...)
- */
 function stableOptionsString(options) {
   if (!options || typeof options !== "object") return "";
   const keys = Object.keys(options).sort();
@@ -187,7 +230,6 @@ function stableOptionsString(options) {
 function normalizeAnswerForHash(type, answer) {
   const t = sanitizeType(type);
   if (t === "MSQ") {
-    // MSQ can be ["A","C"] or "A,C"
     if (Array.isArray(answer)) return answer.map((x) => String(x).trim()).filter(Boolean).sort().join(",");
     return String(answer ?? "")
       .split(",")
@@ -197,12 +239,11 @@ function normalizeAnswerForHash(type, answer) {
       .join(",");
   }
   if (t === "NAT") return String(answer ?? "").trim();
-  return String(answer ?? "").trim(); // MCQ "A"
+  return String(answer ?? "").trim();
 }
 
 /**
  * question_hash includes difficulty+section+subject+topic+type+question+options+answer
- * so "same question text but different difficulty" becomes different hash (your choice).
  */
 function computeQuestionHash(q) {
   const section = normalizeSection(q.section || "EC");
@@ -242,15 +283,7 @@ async function runProvider(provider, payload) {
       return await generateLocalQuestions(payload);
     }
   }
-
   throw new Error("provider must be openai|local|auto");
-}
-
-// Small helper: hard-trim or pad a question list to desired length
-function coerceCount(qs, desired) {
-  const arr = Array.isArray(qs) ? qs.slice(0) : [];
-  if (arr.length > desired) return arr.slice(0, desired);
-  return arr; // if short, caller decides how to fill
 }
 
 /* =========================================================
@@ -308,11 +341,8 @@ app.post("/api/auth/login", async (req, res) => {
 
 /* =========================================================
    AI
-   POST /api/ai/generate
    GET  /api/ai/blueprint
 ========================================================= */
-
-// Returns a randomized blueprint (preview distribution)
 app.get("/api/ai/blueprint", authMiddleware, async (req, res) => {
   const mode = (req.query.mode || "main").toString().toLowerCase();
   if (mode !== "main") return res.status(400).json({ error: "Only mode=main supported for blueprint right now" });
@@ -327,7 +357,6 @@ app.get("/api/ai/blueprint", authMiddleware, async (req, res) => {
 /* =========================================================
    Stage-6C DB helpers
 ========================================================= */
-
 async function countAvailable({ section, subject, difficulty }) {
   const r = await pool.query(
     `SELECT COUNT(*)::int AS c
@@ -339,37 +368,43 @@ async function countAvailable({ section, subject, difficulty }) {
 }
 
 /**
- * Inserts questions with dedupe on question_hash.
- * Returns: { insertedCount, idsInserted, totalAttempted }
+ * Bulk import with dedupe by question_hash.
+ * Uses ON CONFLICT DO NOTHING.
  */
-async function insertQuestionsWithDedupe(questions, { section, difficulty }) {
+async function importQuestionsWithDedupe(questions, { section, difficulty }) {
   const qs = Array.isArray(questions) ? questions : [];
-  if (!qs.length) return { insertedCount: 0, idsInserted: [], totalAttempted: 0 };
+  if (!qs.length) return { inserted: 0, ids: [] };
 
-  // map to DB rows
   const rows = qs.map((q, idx) => {
-    const subject = String(q.subject || "").trim();
-    const topic = String(q.topic || "Mixed").trim();
     const type = sanitizeType(q.type);
 
+    const subject = String(q.subject || "").trim();
+    const topic = String(q.topic || "Mixed").trim();
     const question = String(q.question || "").trim();
-    if (!subject) throw new Error(`AI row ${idx + 1}: subject missing`);
-    if (!question) throw new Error(`AI row ${idx + 1}: question missing`);
+    if (!subject) throw new Error(`Row ${idx + 1}: subject missing`);
+    if (!question) throw new Error(`Row ${idx + 1}: question missing`);
 
     let options = null;
     if (type !== "NAT") {
-      if (!isPlainObject(q.options)) throw new Error(`AI row ${idx + 1}: options object required for ${type}`);
+      if (!isPlainObject(q.options)) throw new Error(`Row ${idx + 1}: options object required for ${type}`);
       options = q.options;
-    } else {
-      options = null;
     }
 
-    const answer = q.answer == null ? "" : String(q.answer).trim();
-    const solution = String(q.solution || "").trim();
-
-    const marks = asNum(q.marks, 1);
-    const neg_marks = asNum(q.neg_marks, 0.33);
-    const source = String(q.source || "AI").trim();
+    let answer = q.answer;
+    if (type === "MSQ") {
+      answer = Array.isArray(answer)
+        ? answer.map((x) => String(x).trim()).filter(Boolean).sort().join(",")
+        : String(answer ?? "")
+            .split(",")
+            .map((x) => x.trim())
+            .filter(Boolean)
+            .sort()
+            .join(",");
+    } else if (type === "NAT") {
+      answer = answer == null ? "" : String(answer).trim();
+    } else {
+      answer = String(answer ?? "").trim();
+    }
 
     const row = {
       section: normalizeSection(section || q.section || "EC"),
@@ -377,13 +412,13 @@ async function insertQuestionsWithDedupe(questions, { section, difficulty }) {
       subject,
       topic,
       type,
-      marks,
-      neg_marks,
+      marks: asNum(q.marks, 1),
+      neg_marks: asNum(q.neg_marks, 0.33),
       question,
       options,
       answer,
-      solution,
-      source,
+      solution: String(q.solution || "").trim(),
+      source: String(q.source || "AI").trim(),
       year: q.year == null || q.year === "" ? null : Number(q.year),
       paper: q.paper == null ? null : String(q.paper),
       session: q.session == null ? null : String(q.session),
@@ -437,7 +472,6 @@ async function insertQuestionsWithDedupe(questions, { section, difficulty }) {
       r.question_number
     );
     const ph = cols.map((_, j) => `$${base + j + 1}`);
-    // options jsonb index = 9 in cols
     ph[9] = `${ph[9]}::jsonb`;
     return `(${ph.join(",")})`;
   });
@@ -445,346 +479,386 @@ async function insertQuestionsWithDedupe(questions, { section, difficulty }) {
   const sql = `
     INSERT INTO public.questions (${cols.join(",")})
     VALUES ${placeholders.join(",")}
-    ON CONFLICT (question_hash) DO NOTHING
+    ON CONFLICT DO NOTHING
     RETURNING id
   `;
 
   const out = await pool.query(sql, values);
-  return {
-    insertedCount: out.rowCount,
-    idsInserted: out.rows.map((x) => x.id),
-    totalAttempted: rows.length,
+  return { inserted: out.rowCount, ids: out.rows.map((x) => x.id) };
+}
+
+async function ensureDBHasQuestions({ provider, section, subject, difficulty, needMin }) {
+  const have = await countAvailable({ section, subject, difficulty });
+  const missing = Math.max(0, needMin - have);
+  if (missing <= 0) return { have, needMin, missing: 0, generated: 0, haveAfter: have };
+
+  const payload = {
+    mode: "subject",
+    section,
+    subject,
+    topic: "Mixed",
+    count: missing,
+    typeMix: defaultTypeMix(missing),
+    difficulty,
   };
+
+  const gen = await runProvider(provider, payload);
+  const genQs = Array.isArray(gen?.questions) ? gen.questions : [];
+
+  const ins = await importQuestionsWithDedupe(genQs, { section, difficulty });
+  const haveAfter = have + ins.inserted;
+
+  return { have, needMin, missing, generated: ins.inserted, haveAfter };
 }
 
-/**
- * Bucket split: try to allocate ~ratioSeen per bucket,
- * then adjust to hit exact totals while keeping bucket sizes.
- */
-function splitCountsPerBucket(buckets, ratioSeen = 0.4) {
-  // buckets: [{key, want}]
-  const base = buckets.map((b) => {
-    const seen = Math.floor(b.want * ratioSeen);
-    return { ...b, seen, newCount: b.want - seen };
-  });
-
-  const totalWant = base.reduce((a, b) => a + b.want, 0);
-  const targetSeen = Math.round(totalWant * ratioSeen);
-
-  let curSeen = base.reduce((a, b) => a + b.seen, 0);
-  let delta = targetSeen - curSeen;
-
-  // distribute delta by adding/removing 1 in buckets where possible
-  // to keep 0<=seen<=want
-  let guard = 10000;
-  while (delta !== 0 && guard-- > 0) {
-    for (const b of base) {
-      if (delta === 0) break;
-      if (delta > 0) {
-        if (b.seen < b.want) {
-          b.seen += 1;
-          b.newCount -= 1;
-          delta -= 1;
-        }
-      } else {
-        if (b.seen > 0) {
-          b.seen -= 1;
-          b.newCount += 1;
-          delta += 1;
-        }
-      }
-    }
-    // if we loop and can’t change, break
-    if (guard % 50 === 0) {
-      const possible =
-        delta > 0
-          ? base.some((b) => b.seen < b.want)
-          : base.some((b) => b.seen > 0);
-      if (!possible) break;
-    }
-  }
-
-  return base;
+// Helpers for 40/60 split
+function split4060(n) {
+  const wantSeen = Math.floor(n * 0.4);
+  const wantNew = n - wantSeen;
+  return { wantSeen, wantNew };
 }
 
-/**
- * Select questions by bucket with 40/60 seen/new preference.
- * "seen" = exists in question_usage for this user
- */
-async function selectQuestionsForMain({ userId, difficulty, blueprint }) {
-  const diff = normalizeDifficulty(difficulty);
+// Pull “seen” and “new” from DB for a bucket
+async function pickFromDBForBucket({ userId, section, subject, difficulty, want }) {
+  const { wantSeen, wantNew } = split4060(want);
 
-  const buckets = [];
+  const seenRows = await pool.query(
+    `
+    SELECT q.id, q.subject, q.topic, q.type, q.marks, q.neg_marks, q.question, q.options, q.answer, q.solution,
+           q.source, q.year, q.paper, q.session, q.question_number, q.section, q.difficulty
+    FROM public.questions q
+    WHERE q.section=$2 AND q.subject=$3 AND q.difficulty=$4
+      AND EXISTS (
+        SELECT 1 FROM public.question_usage u
+        WHERE u.user_id=$1 AND u.question_id=q.id
+      )
+    ORDER BY random()
+    LIMIT $5
+    `,
+    [userId, section, subject, difficulty, wantSeen]
+  );
 
-  // GE bucket: fixed 10
-  buckets.push({
-    key: `GE::General Aptitude`,
-    section: "GE",
-    subject: "General Aptitude",
-    want: blueprint?.GE ?? 10,
-  });
+  const newRows = await pool.query(
+    `
+    SELECT q.id, q.subject, q.topic, q.type, q.marks, q.neg_marks, q.question, q.options, q.answer, q.solution,
+           q.source, q.year, q.paper, q.session, q.question_number, q.section, q.difficulty
+    FROM public.questions q
+    WHERE q.section=$2 AND q.subject=$3 AND q.difficulty=$4
+      AND NOT EXISTS (
+        SELECT 1 FROM public.question_usage u
+        WHERE u.user_id=$1 AND u.question_id=q.id
+      )
+    ORDER BY random()
+    LIMIT $5
+    `,
+    [userId, section, subject, difficulty, wantNew]
+  );
 
-  // EC buckets from plan
-  const EC = blueprint?.EC || blueprint?.perSubject || {};
-  // buildMainPaperPlan() returns { EC: {subject:count} }, buildMainBlueprint() returns { perSubject: {..} }
-  const ecMap = blueprint?.EC && typeof blueprint.EC === "object" ? blueprint.EC : null;
-  const perSubject = ecMap || blueprint?.perSubject || {};
+  let picked = [...(seenRows.rows || []), ...(newRows.rows || [])];
 
-  for (const [subject, cnt] of Object.entries(perSubject)) {
-    const want = parseInt(cnt, 10) || 0;
-    if (want <= 0) continue;
-    buckets.push({
-      key: `EC::${subject}`,
-      section: "EC",
-      subject,
-      want,
-    });
-  }
+  if (picked.length < want) {
+    const need = want - picked.length;
+    const ids = picked.map((x) => x.id);
 
-  // split into seen/new targets per bucket
-  const split = splitCountsPerBucket(buckets, 0.4);
-
-  const picked = [];
-  const pickedIds = new Set();
-
-  // helper query builders
-  async function pickSeen(section, subject, limit) {
-    if (limit <= 0) return [];
-    const r = await pool.query(
+    const moreNew = await pool.query(
       `
       SELECT q.id, q.subject, q.topic, q.type, q.marks, q.neg_marks, q.question, q.options, q.answer, q.solution,
              q.source, q.year, q.paper, q.session, q.question_number, q.section, q.difficulty
       FROM public.questions q
-      WHERE q.section=$1 AND q.subject=$2 AND q.difficulty=$3
-        AND EXISTS (
-          SELECT 1 FROM public.question_usage u
-          WHERE u.user_id=$4 AND u.question_id=q.id
-        )
-      ORDER BY random()
-      LIMIT $5
-      `,
-      [section, subject, diff, userId, limit]
-    );
-    return r.rows || [];
-  }
-
-  async function pickNew(section, subject, limit) {
-    if (limit <= 0) return [];
-    const r = await pool.query(
-      `
-      SELECT q.id, q.subject, q.topic, q.type, q.marks, q.neg_marks, q.question, q.options, q.answer, q.solution,
-             q.source, q.year, q.paper, q.session, q.question_number, q.section, q.difficulty
-      FROM public.questions q
-      WHERE q.section=$1 AND q.subject=$2 AND q.difficulty=$3
+      WHERE q.section=$2 AND q.subject=$3 AND q.difficulty=$4
         AND NOT EXISTS (
           SELECT 1 FROM public.question_usage u
-          WHERE u.user_id=$4 AND u.question_id=q.id
+          WHERE u.user_id=$1 AND u.question_id=q.id
         )
+        AND ($6::int[] IS NULL OR q.id <> ALL($6::int[]))
       ORDER BY random()
       LIMIT $5
       `,
-      [section, subject, diff, userId, limit]
+      [userId, section, subject, difficulty, need, ids.length ? ids : null]
     );
-    return r.rows || [];
+    picked.push(...(moreNew.rows || []));
   }
 
-  for (const b of split) {
-    // 1) seen first
-    let gotSeen = await pickSeen(b.section, b.subject, b.seen);
-    gotSeen = gotSeen.filter((x) => !pickedIds.has(x.id));
-    for (const row of gotSeen) {
-      picked.push(row);
-      pickedIds.add(row.id);
-    }
+  if (picked.length < want) {
+    const need = want - picked.length;
+    const ids = picked.map((x) => x.id);
 
-    // if not enough seen, shift deficit to new
-    const seenDeficit = b.seen - gotSeen.length;
-    let needNew = b.newCount + Math.max(0, seenDeficit);
-
-    // 2) new
-    let gotNew = await pickNew(b.section, b.subject, needNew);
-    gotNew = gotNew.filter((x) => !pickedIds.has(x.id));
-    for (const row of gotNew) {
-      if (picked.length >= 65) break;
-      picked.push(row);
-      pickedIds.add(row.id);
-    }
-
-    // if still short (rare), top-up from any (ignoring seen/new) within bucket
-    const wantTotal = b.want;
-    const haveBucket = gotSeen.length + gotNew.length;
-    const missing = wantTotal - haveBucket;
-    if (missing > 0) {
-      const rr = await pool.query(
-        `
-        SELECT q.id, q.subject, q.topic, q.type, q.marks, q.neg_marks, q.question, q.options, q.answer, q.solution,
-               q.source, q.year, q.paper, q.session, q.question_number, q.section, q.difficulty
-        FROM public.questions q
-        WHERE q.section=$1 AND q.subject=$2 AND q.difficulty=$3
-        ORDER BY random()
-        LIMIT $4
-        `,
-        [b.section, b.subject, diff, missing]
-      );
-      const extra = (rr.rows || []).filter((x) => !pickedIds.has(x.id));
-      for (const row of extra) {
-        if (picked.length >= 65) break;
-        picked.push(row);
-        pickedIds.add(row.id);
-      }
-    }
+    const moreSeen = await pool.query(
+      `
+      SELECT q.id, q.subject, q.topic, q.type, q.marks, q.neg_marks, q.question, q.options, q.answer, q.solution,
+             q.source, q.year, q.paper, q.session, q.question_number, q.section, q.difficulty
+      FROM public.questions q
+      WHERE q.section=$2 AND q.subject=$3 AND q.difficulty=$4
+        AND EXISTS (
+          SELECT 1 FROM public.question_usage u
+          WHERE u.user_id=$1 AND u.question_id=q.id
+        )
+        AND ($6::int[] IS NULL OR q.id <> ALL($6::int[]))
+      ORDER BY random()
+      LIMIT $5
+      `,
+      [userId, section, subject, difficulty, need, ids.length ? ids : null]
+    );
+    picked.push(...(moreSeen.rows || []));
   }
 
-  // final safety: hard trim to 65
-  return picked.slice(0, 65);
+  if (picked.length < want) {
+    const need = want - picked.length;
+    const ids = picked.map((x) => x.id);
+
+    const any = await pool.query(
+      `
+      SELECT q.id, q.subject, q.topic, q.type, q.marks, q.neg_marks, q.question, q.options, q.answer, q.solution,
+             q.source, q.year, q.paper, q.session, q.question_number, q.section, q.difficulty
+      FROM public.questions q
+      WHERE q.section=$1 AND q.subject=$2 AND q.difficulty=$3
+        AND ($4::int[] IS NULL OR q.id <> ALL($4::int[]))
+      ORDER BY random()
+      LIMIT $5
+      `,
+      [section, subject, difficulty, ids.length ? ids : null, need]
+    );
+    picked.push(...(any.rows || []));
+  }
+
+  return { picked: picked.slice(0, want) };
+}
+
+// Insert usage rows for the started test
+async function recordUsage({ userId, testId, questionIds }) {
+  if (!questionIds.length) return 0;
+
+  const values = [];
+  const placeholders = questionIds.map((qid, i) => {
+    values.push(userId, qid, testId);
+    const b = i * 3;
+    return `($${b + 1}, $${b + 2}, $${b + 3})`;
+  });
+
+  const sql = `
+    INSERT INTO public.question_usage (user_id, question_id, test_id)
+    VALUES ${placeholders.join(",")}
+    ON CONFLICT (user_id, question_id, test_id) DO NOTHING
+  `;
+
+  const out = await pool.query(sql, values);
+  return out.rowCount;
 }
 
 /* =========================================================
-   Stage-6C: Start MAIN test with difficulty
+   Stage-6C: Start MAIN test with difficulty (Option B jobs)
    POST /api/test/start-main { difficulty }
 ========================================================= */
 app.post("/api/test/start-main", authMiddleware, async (req, res) => {
-  try {
-    const userId = req.user?.id;
-    const difficulty = normalizeDifficulty(req.body?.difficulty || "medium"); // easy|medium|hard
-    const provider = (req.body?.provider || DEFAULT_AI_PROVIDER).toLowerCase();
+  const userId = req.user?.id;
+  const difficulty = normalizeDifficulty(req.body?.difficulty || "medium");
 
-    // 0) If there is already an active test, return it (optional but safer)
-    const active = await pool.query(
-      `SELECT id FROM public.test_sessions
-       WHERE user_id=$1 AND is_submitted=false
-       ORDER BY created_at DESC LIMIT 1`,
-      [userId]
-    );
-    if (active.rows.length) {
-      return res.status(409).json({
-        error: "Active test already exists. Please submit it or reset DB.",
-        activeTestId: active.rows[0].id,
+  const jobId = newJobId();
+  jobSet(jobId, {
+    status: "running",
+    percent: 0,
+    step: "Job created",
+    generatedInserted: 0,
+    generatedTarget: 0,
+    generatedBucketsDone: 0,
+    generatedBucketsTotal: 0,
+  });
+
+  res.json({ ok: true, jobId });
+
+  (async () => {
+    try {
+      jobSet(jobId, { percent: 5, step: "Building blueprint" });
+
+      const seedStr = `${userId}:${new Date().toISOString().slice(0, 10)}:main`;
+      const blueprint = buildMainPaperPlan({
+        seedStr,
+        minPerSubject: 1,
+        maxPerSubject: 5,
+        addMixedBucket: true,
+      });
+
+      // Build pool requirements list first (for target estimate)
+      const reqs = [];
+      const geNeedMin = Math.max(80, (blueprint.GE || 10) * 8);
+      reqs.push({ section: "GE", subject: "General Aptitude", needMin: geNeedMin });
+
+      for (const [sub, cnt] of Object.entries(blueprint.EC || {})) {
+        const want = parseInt(cnt, 10) || 0;
+        if (want <= 0) continue;
+        const needMin = Math.max(120, want * 10);
+        reqs.push({ section: "EC", subject: sub, needMin });
+      }
+
+      jobSet(jobId, {
+        generatedBucketsTotal: reqs.length,
+        generatedBucketsDone: 0,
+      });
+
+      jobSet(jobId, { percent: 10, step: "Estimating generation target" });
+
+      let targetMissing = 0;
+      for (const r of reqs) {
+        const have = await countAvailable({ section: r.section, subject: r.subject, difficulty });
+        targetMissing += Math.max(0, r.needMin - have);
+      }
+
+      jobSet(jobId, {
+        generatedTarget: targetMissing,
+        generatedInserted: 0,
+        percent: 12,
+        step: `Estimated generation target: ${targetMissing}`,
+      });
+
+      jobSet(jobId, { percent: 15, step: "Ensuring DB question pools (GE)" });
+
+      let insertedSoFar = 0;
+      let bucketsDone = 0;
+
+      // GE
+      {
+        const stats = await ensureDBHasQuestions({
+          provider: DEFAULT_AI_PROVIDER,
+          section: "GE",
+          subject: "General Aptitude",
+          difficulty,
+          needMin: geNeedMin,
+        });
+
+        insertedSoFar += stats.generated;
+        bucketsDone += 1;
+
+        jobSet(jobId, {
+          percent: 25,
+          generatedInserted: insertedSoFar,
+          generatedBucketsDone: bucketsDone,
+          step: `GE pool: have=${stats.have} → need=${geNeedMin}, missing=${stats.missing}, inserted=${stats.generated}`,
+        });
+      }
+
+      // EC
+      jobSet(jobId, { percent: 35, step: "Ensuring DB question pools (EC subjects)" });
+
+      const entries = Object.entries(blueprint.EC || {});
+      for (let i = 0; i < entries.length; i++) {
+        const [sub, cnt] = entries[i];
+        const want = parseInt(cnt, 10) || 0;
+        if (want <= 0) continue;
+
+        const needMin = Math.max(120, want * 10);
+
+        const base = 35;
+        const span = 30; // 35 -> 65
+        const p = base + Math.round((i / Math.max(1, entries.length)) * span);
+
+        jobSet(jobId, { percent: p, step: `Ensuring DB pool: ${sub}` });
+
+        const stats = await ensureDBHasQuestions({
+          provider: DEFAULT_AI_PROVIDER,
+          section: "EC",
+          subject: sub,
+          difficulty,
+          needMin,
+        });
+
+        insertedSoFar += stats.generated;
+        bucketsDone += 1;
+
+        jobSet(jobId, {
+          percent: p,
+          generatedInserted: insertedSoFar,
+          generatedBucketsDone: bucketsDone,
+          step: `EC pool ${sub}: have=${stats.have} → need=${needMin}, missing=${stats.missing}, inserted=${stats.generated}`,
+        });
+      }
+
+      jobSet(jobId, { percent: 70, step: "Creating test session row" });
+
+      const ins = await pool.query(
+        `
+        INSERT INTO public.test_sessions (user_id, answers, remaining_time, is_submitted, mode, subject, totalquestions, created_at)
+        VALUES ($1, '{}'::jsonb, $2, false, 'main', 'EC', 65, now())
+        RETURNING id
+        `,
+        [userId, 60 * 60]
+      );
+      const testId = ins.rows[0].id;
+
+      jobSet(jobId, { percent: 78, step: "Selecting questions from DB (40/60 rule)" });
+
+      const picked = [];
+
+      // GE
+      {
+        const r = await pickFromDBForBucket({
+          userId,
+          section: "GE",
+          subject: "General Aptitude",
+          difficulty,
+          want: blueprint.GE || 10,
+        });
+        picked.push(...r.picked);
+      }
+
+      // EC
+      for (const [sub, cnt] of Object.entries(blueprint.EC || {})) {
+        const want = parseInt(cnt, 10) || 0;
+        if (want <= 0) continue;
+
+        const r = await pickFromDBForBucket({
+          userId,
+          section: "EC",
+          subject: sub,
+          difficulty,
+          want,
+        });
+        picked.push(...r.picked);
+      }
+
+      let finalQs = picked.slice(0, 65);
+
+      if (finalQs.length < 65) {
+        jobSet(jobId, { percent: 85, step: "Top-up fill (rare)" });
+        const missing = 65 - finalQs.length;
+
+        const fill = await pool.query(
+          `
+          SELECT q.*
+          FROM public.questions q
+          WHERE q.section='EC' AND q.difficulty=$1
+          ORDER BY random()
+          LIMIT $2
+          `,
+          [difficulty, missing]
+        );
+
+        finalQs = finalQs.concat(fill.rows).slice(0, 65);
+      }
+
+      jobSet(jobId, { percent: 92, step: "Recording question_usage rows" });
+
+      const qids = finalQs.map((x) => x.id).filter(Boolean);
+      await recordUsage({ userId, testId, questionIds: qids });
+
+      jobSet(jobId, {
+        percent: 100,
+        status: "done",
+        step: "Done",
+        result: { ok: true, testId, difficulty, blueprint, questions: finalQs },
+      });
+    } catch (e) {
+      console.error("start-main job failed:", e);
+      jobSet(jobId, {
+        status: "error",
+        step: "Failed",
+        error: e?.message || String(e),
       });
     }
-
-    // 1) Build blueprint (use your deterministic plan helper)
-    // buildMainPaperPlan returns {GE:10, EC:{...}, total:65}
-    const blueprint = buildMainPaperPlan({
-      minPerSubject: req.body?.minPerSubject ?? 1,
-      maxPerSubject: req.body?.maxPerSubject ?? 5,
-      seedStr: req.body?.seedStr || `${userId}:${new Date().toISOString().slice(0, 10)}:main`,
-      addMixedBucket: true,
-    });
-
-    // Convert blueprint buckets into (section,subject,want)
-    const buckets = [];
-    buckets.push({ section: "GE", subject: "General Aptitude", want: blueprint.GE || 10 });
-
-    const ecMap = blueprint.EC || {};
-    for (const [sub, cnt] of Object.entries(ecMap)) {
-      const want = parseInt(cnt, 10) || 0;
-      if (want <= 0) continue;
-      buckets.push({ section: "EC", subject: sub === "EC_MIXED" ? "EC_MIXED" : sub, want });
-    }
-
-    // 2) Ensure DB has enough questions per bucket for this difficulty
-    // If insufficient -> generate missing and import with dedupe hash
-    const ensureDebug = [];
-    for (const b of buckets) {
-      const have = await countAvailable({ section: b.section, subject: b.subject, difficulty });
-      const missing = Math.max(0, b.want - have);
-
-      ensureDebug.push({ ...b, have, missing });
-
-      if (missing > 0) {
-        // Generate missing from AI provider (subject mode calls)
-        const payload = {
-          mode: "subject",
-          section: b.section,
-          subject: b.subject,
-          topic: "Mixed",
-          count: missing,
-          typeMix: defaultTypeMix(missing),
-          difficulty,
-        };
-
-        const gen = await runProvider(provider, payload);
-        const genQsRaw = gen?.questions || [];
-        const genQs = coerceCount(genQsRaw, missing).map((q) => ({
-          ...q,
-          section: b.section,
-          subject: q?.subject || b.subject,
-          topic: q?.topic || "Mixed",
-          difficulty,
-          source: "AI",
-        }));
-
-        await insertQuestionsWithDedupe(genQs, { section: b.section, difficulty });
-      }
-    }
-
-    // 3) Create active test session row
-    const testInsert = await pool.query(
-      `
-      INSERT INTO public.test_sessions (user_id, answers, remaining_time, is_submitted, mode, subject, totalquestions, created_at)
-      VALUES ($1, '{}'::jsonb, $2, false, $3, $4, $5, now())
-      RETURNING id
-      `,
-      [userId, 60 * 60, "main", "EC", 65]
-    );
-    const testId = testInsert.rows[0].id;
-
-    // 4) Select final 65 questions with 40% seen + 60% new, bucketed by plan
-    const picked = await selectQuestionsForMain({
-      userId,
-      difficulty,
-      blueprint: {
-        GE: blueprint.GE,
-        perSubject: blueprint.EC,
-      },
-    });
-
-    if (!picked.length) {
-      // rollback the created test session
-      await pool.query(`DELETE FROM public.test_sessions WHERE id=$1`, [testId]);
-      return res.status(500).json({ error: "Failed to select questions (empty result)" });
-    }
-
-    // 5) Insert usage rows
-    // Use ON CONFLICT DO NOTHING because you have unique per test index
-    const usageValues = [];
-    const usagePlaceholders = picked.map((q, i) => {
-      const base = i * 3;
-      usageValues.push(userId, q.id, testId);
-      return `($${base + 1}, $${base + 2}, $${base + 3})`;
-    });
-
-    await pool.query(
-      `
-      INSERT INTO public.question_usage (user_id, question_id, test_id)
-      VALUES ${usagePlaceholders.join(",")}
-      ON CONFLICT DO NOTHING
-      `,
-      usageValues
-    );
-
-    // 6) Return payload for frontend exam
-    return res.json({
-      ok: true,
-      testId,
-      difficulty,
-      blueprint,
-      questions: picked,
-      _debug: {
-        ensured: ensureDebug,
-        pickedCount: picked.length,
-        provider,
-      },
-    });
-  } catch (e) {
-    console.error("start-main error:", e);
-    return res.status(500).json({ error: "Failed to start main test", detail: e?.message || String(e) });
-  }
+  })();
 });
 
 /* =========================================================
-   /api/ai/generate (kept as you had)
+   /api/ai/generate  (subject only)
 ========================================================= */
 app.post("/api/ai/generate", authMiddleware, async (req, res) => {
   try {
@@ -801,150 +875,34 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
     const cached = cacheGet(cacheKey);
     if (cached) return res.json({ ...cached, cached: true });
 
-    // difficulty for BOTH modes
     const diff = normalizeDifficulty(req.body?.difficulty);
 
-    // ---------- SUBJECT MODE ----------
-    if (mode === "subject") {
-      const { subject, topic, count = 5 } = req.body || {};
-      if (!subject || !topic) return res.status(400).json({ error: "subject and topic are required" });
-
-      const n = Math.max(1, Math.min(parseInt(count, 10) || 5, 100));
-
-      const payload = {
-        mode: "subject",
-        subject,
-        topic,
-        count: n,
-        typeMix: defaultTypeMix(n),
-        difficulty: diff,
-      };
-
-      const data = await runProvider(provider, payload);
-
-      // Stage-6C hardening: ensure difficulty is correct on every question
-      if (Array.isArray(data?.questions)) {
-        for (const q of data.questions) q.difficulty = diff;
-      }
-
-      cacheSet(cacheKey, data);
-      return res.json(data);
+    if (mode !== "subject") {
+      return res.status(400).json({ error: "mode must be subject (main is handled by /test/start-main)" });
     }
 
-    // ---------- MAIN MODE ----------
-    if (mode === "main") {
-      const blueprint =
-        req.body?.blueprint ||
-        buildMainBlueprint({
-          minPerSubject: req.body?.minPerSubject ?? 1,
-          maxPerSubject: req.body?.maxPerSubject ?? 5,
-        });
+    const { subject, topic, count = 5 } = req.body || {};
+    if (!subject || !topic) return res.status(400).json({ error: "subject and topic are required" });
 
-      const perSubject = blueprint?.perSubject || {};
-      const geCount = blueprint?.GE ?? 10;
-      const totalTarget = blueprint?.total ?? 65;
+    const n = Math.max(1, Math.min(parseInt(count, 10) || 5, 100));
 
-      // 1) Generate GE
-      const gePayload = {
-        mode: "subject",
-        subject: "General Aptitude",
-        topic: req.body?.geTopic || "Mixed",
-        count: geCount,
-        typeMix: defaultTypeMix(geCount),
-        difficulty: diff,
-      };
+    const payload = {
+      mode: "subject",
+      subject,
+      topic,
+      count: n,
+      typeMix: defaultTypeMix(n),
+      difficulty: diff,
+    };
 
-      // 2) Generate EC subject chunks
-      const subjectPayloads = [];
-      for (const [sub, cnt] of Object.entries(perSubject)) {
-        const n = parseInt(cnt, 10) || 0;
-        if (n <= 0) continue;
+    const data = await runProvider(provider, payload);
 
-        subjectPayloads.push({
-          mode: "subject",
-          subject: sub === "EC_MIXED" ? "EC_MIXED" : sub,
-          topic: "Mixed",
-          count: n,
-          typeMix: defaultTypeMix(n),
-          difficulty: diff,
-        });
-      }
-
-      const geOut = await runProvider(provider, gePayload);
-      const geQsRaw = geOut?.questions || [];
-      const geQs = coerceCount(geQsRaw, geCount).map((q) => ({
-        ...q,
-        difficulty: diff,
-        section: "GE",
-        subject: q?.subject || "General Aptitude",
-      }));
-
-      const ecParts = [];
-      for (const p of subjectPayloads) {
-        const part = await runProvider(provider, p);
-        const qsRaw = part?.questions || [];
-        const qs = coerceCount(qsRaw, p.count).map((q) => ({
-          ...q,
-          difficulty: diff,
-          section: "EC",
-          subject: q?.subject || p.subject,
-          topic: q?.topic || "Mixed",
-        }));
-        ecParts.push({ subject: p.subject, want: p.count, got: qs.length, questions: qs });
-      }
-
-      // Merge + harden total count
-      const all = [];
-      all.push(...geQs);
-      for (const part of ecParts) all.push(...part.questions);
-
-      // If under target (rare), fill by requesting extra EC_MIXED
-      if (all.length < totalTarget) {
-        const missing = totalTarget - all.length;
-
-        const fillerPayload = {
-          mode: "subject",
-          subject: "EC_MIXED",
-          topic: "Mixed",
-          count: missing,
-          typeMix: defaultTypeMix(missing),
-          difficulty: diff,
-        };
-
-        const filler = await runProvider(provider, fillerPayload);
-        const fillerQs = coerceCount(filler?.questions || [], missing).map((q) => ({
-          ...q,
-          difficulty: diff,
-          section: "EC",
-          subject: q?.subject || "EC_MIXED",
-          topic: q?.topic || "Mixed",
-        }));
-        all.push(...fillerQs);
-      }
-
-      // If over target, trim
-      const finalQs = all.slice(0, totalTarget);
-
-      // Final assertion (Stage-6C safety)
-      const result = {
-        provider,
-        mode: "main",
-        blueprint,
-        difficulty: diff,
-        totalQuestions: finalQs.length,
-        questions: finalQs,
-        _debug: {
-          geRequested: geCount,
-          geReturned: geQs.length,
-          ecPlan: ecParts.map((x) => ({ subject: x.subject, want: x.want, got: x.got })),
-        },
-      };
-
-      cacheSet(cacheKey, result);
-      return res.json(result);
+    if (Array.isArray(data?.questions)) {
+      for (const q of data.questions) q.difficulty = diff;
     }
 
-    return res.status(400).json({ error: "mode must be subject|main" });
+    cacheSet(cacheKey, data);
+    return res.json(data);
   } catch (e) {
     console.error("AI error:", e);
     return res.status(500).json({ error: "AI generation failed", detail: e?.message || String(e) });
@@ -952,7 +910,7 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
 });
 
 /* =========================================================
-   TEST API (DB questions bank)
+   TEST API (DB question bank quick pull)
 ========================================================= */
 app.get("/api/test/generate", authMiddleware, async (req, res) => {
   try {
@@ -964,7 +922,7 @@ app.get("/api/test/generate", authMiddleware, async (req, res) => {
       const subjects = subjectsParam.split(",").map((s) => s.trim()).filter(Boolean);
       rows = await pool.query(
         `SELECT id, subject, topic, type, marks, neg_marks, question, options, answer, solution, source, year, paper, session, question_number, section, difficulty
-         FROM questions
+         FROM public.questions
          WHERE subject = ANY($1)
          ORDER BY random()
          LIMIT $2`,
@@ -973,7 +931,7 @@ app.get("/api/test/generate", authMiddleware, async (req, res) => {
     } else {
       rows = await pool.query(
         `SELECT id, subject, topic, type, marks, neg_marks, question, options, answer, solution, source, year, paper, session, question_number, section, difficulty
-         FROM questions
+         FROM public.questions
          ORDER BY random()
          LIMIT $1`,
         [count]
@@ -988,7 +946,7 @@ app.get("/api/test/generate", authMiddleware, async (req, res) => {
 });
 
 /* =========================================================
-   TEST SESSION HARDENING (STAGE 4)
+   TEST SESSION (Stage 4)
 ========================================================= */
 app.get("/api/test/active", authMiddleware, async (req, res) => {
   try {
@@ -996,7 +954,7 @@ app.get("/api/test/active", authMiddleware, async (req, res) => {
 
     const r = await pool.query(
       `SELECT id, user_id, answers, remaining_time, is_submitted, mode, subject, totalquestions, created_at
-       FROM test_sessions
+       FROM public.test_sessions
        WHERE user_id = $1 AND is_submitted = false
        ORDER BY created_at DESC
        LIMIT 1`,
@@ -1013,18 +971,11 @@ app.get("/api/test/active", authMiddleware, async (req, res) => {
 app.post("/api/test/autosave", authMiddleware, async (req, res) => {
   try {
     const userId = req.user?.id;
-
-    const {
-      answers = {},
-      remainingTime = null,
-      mode = "main",
-      subject = null,
-      totalQuestions = 65,
-    } = req.body || {};
+    const { answers = {}, remainingTime = null, mode = "main", subject = null, totalQuestions = 65 } = req.body || {};
 
     const active = await pool.query(
       `SELECT id
-       FROM test_sessions
+       FROM public.test_sessions
        WHERE user_id = $1 AND is_submitted = false
        ORDER BY created_at DESC
        LIMIT 1`,
@@ -1035,7 +986,7 @@ app.post("/api/test/autosave", authMiddleware, async (req, res) => {
       const sid = active.rows[0].id;
 
       const upd = await pool.query(
-        `UPDATE test_sessions
+        `UPDATE public.test_sessions
          SET answers = $2::jsonb,
              remaining_time = $3,
              mode = $4,
@@ -1050,7 +1001,7 @@ app.post("/api/test/autosave", authMiddleware, async (req, res) => {
     }
 
     const ins = await pool.query(
-      `INSERT INTO test_sessions (user_id, answers, remaining_time, is_submitted, mode, subject, totalquestions, created_at)
+      `INSERT INTO public.test_sessions (user_id, answers, remaining_time, is_submitted, mode, subject, totalquestions, created_at)
        VALUES ($1, $2::jsonb, $3, false, $4, $5, $6, now())
        RETURNING id`,
       [userId, JSON.stringify(answers), remainingTime, mode, subject, totalQuestions]
@@ -1079,7 +1030,7 @@ app.post("/api/test/submit", authMiddleware, async (req, res) => {
 
     const active = await pool.query(
       `SELECT id
-       FROM test_sessions
+       FROM public.test_sessions
        WHERE user_id = $1 AND is_submitted = false
        ORDER BY created_at DESC
        LIMIT 1`,
@@ -1090,7 +1041,7 @@ app.post("/api/test/submit", authMiddleware, async (req, res) => {
       const sid = active.rows[0].id;
 
       const upd = await pool.query(
-        `UPDATE test_sessions
+        `UPDATE public.test_sessions
          SET score = $2,
              accuracy = $3,
              answers = $4::jsonb,
@@ -1101,35 +1052,17 @@ app.post("/api/test/submit", authMiddleware, async (req, res) => {
              subject = $8
          WHERE id = $1
          RETURNING id`,
-        [
-          sid,
-          score,
-          accuracy,
-          JSON.stringify(answers),
-          totalQuestions,
-          remainingTime || 0,
-          mode,
-          subject,
-        ]
+        [sid, score, accuracy, JSON.stringify(answers), totalQuestions, remainingTime || 0, mode, subject]
       );
 
       return res.json({ ok: true, id: upd.rows[0].id, action: "updated_active_submitted" });
     }
 
     const ins = await pool.query(
-      `INSERT INTO test_sessions (user_id, score, accuracy, answers, totalquestions, remaining_time, is_submitted, mode, subject, created_at)
+      `INSERT INTO public.test_sessions (user_id, score, accuracy, answers, totalquestions, remaining_time, is_submitted, mode, subject, created_at)
        VALUES ($1,$2,$3,$4::jsonb,$5,$6,true,$7,$8,now())
        RETURNING id`,
-      [
-        userId,
-        score,
-        accuracy,
-        JSON.stringify(answers),
-        totalQuestions,
-        remainingTime || 0,
-        mode,
-        subject,
-      ]
+      [userId, score, accuracy, JSON.stringify(answers), totalQuestions, remainingTime || 0, mode, subject]
     );
 
     return res.json({ ok: true, id: ins.rows[0].id, action: "inserted_submitted" });
@@ -1144,7 +1077,7 @@ app.get("/api/test/history", authMiddleware, async (req, res) => {
     const userId = req.user?.id;
     const r = await pool.query(
       `SELECT id, user_id, score, accuracy, answers, totalquestions, mode, subject, remaining_time, is_submitted, created_at
-       FROM test_sessions
+       FROM public.test_sessions
        WHERE user_id=$1
        ORDER BY created_at DESC`,
       [userId]
@@ -1157,134 +1090,20 @@ app.get("/api/test/history", authMiddleware, async (req, res) => {
 });
 
 /* =========================================================
-   QUESTIONS (Import AI-generated questions into DB)
-   Updated for Stage-6C: store question_hash + difficulty + section + dedupe
+   QUESTIONS IMPORT (Stage-6C aware)
 ========================================================= */
 app.post("/api/questions/import", authMiddleware, async (req, res) => {
   try {
     const body = req.body || {};
     const questions = Array.isArray(body.questions) ? body.questions : [];
-
     if (!questions.length) return res.status(400).json({ error: "questions[] is required" });
     if (questions.length > 200) return res.status(400).json({ error: "Max 200 questions per import" });
 
-    const rows = questions.map((q, idx) => {
-      const defaultSubject = String(body.defaultSubject || body.subject || "").trim();
-      const defaultTopic = String(body.defaultTopic || body.topic || "Mixed").trim();
+    const section = body.section ? normalizeSection(body.section) : null;
+    const difficulty = normalizeDifficulty(body.difficulty || "medium");
 
-      const subject = String(q.subject || defaultSubject || "").trim();
-      const topic = String(q.topic || defaultTopic || "Mixed").trim();
-
-      const type = sanitizeType(q.type);
-
-      const question = String(q.question || "").trim();
-      const answer = q.answer == null ? "" : String(q.answer).trim();
-      const solution = String(q.solution || "").trim();
-
-      if (!subject) throw new Error(`Row ${idx + 1}: subject missing`);
-      if (!question) throw new Error(`Row ${idx + 1}: question missing`);
-
-      let options = null;
-      if (type !== "NAT") {
-        if (!isPlainObject(q.options)) throw new Error(`Row ${idx + 1}: options object required for ${type}`);
-        options = q.options;
-      } else {
-        options = null;
-      }
-
-      const marks = asNum(q.marks, 1);
-      const neg_marks = asNum(q.neg_marks, 0.33);
-
-      const source = String(q.source || "AI").trim();
-
-      const year = q.year == null || q.year === "" ? null : Number(q.year);
-      const paper = q.paper == null ? null : String(q.paper);
-      const session = q.session == null ? null : String(q.session);
-      const question_number = q.question_number == null || q.question_number === "" ? null : Number(q.question_number);
-
-      const section = normalizeSection(q.section || body.section || "EC");
-      const difficulty = normalizeDifficulty(q.difficulty || body.difficulty || "medium");
-
-      const row = {
-        section,
-        difficulty,
-        subject,
-        topic,
-        type,
-        marks,
-        neg_marks,
-        question,
-        options,
-        answer,
-        solution,
-        source,
-        year,
-        paper,
-        session,
-        question_number,
-      };
-      row.question_hash = computeQuestionHash(row);
-
-      return row;
-    });
-
-    const cols = [
-      "question_hash",
-      "difficulty",
-      "section",
-      "subject",
-      "topic",
-      "type",
-      "marks",
-      "neg_marks",
-      "question",
-      "options",
-      "answer",
-      "solution",
-      "source",
-      "year",
-      "paper",
-      "session",
-      "question_number",
-    ];
-
-    const values = [];
-    const placeholders = rows.map((r, i) => {
-      const base = i * cols.length;
-      values.push(
-        r.question_hash,
-        r.difficulty,
-        r.section,
-        r.subject,
-        r.topic,
-        r.type,
-        r.marks,
-        r.neg_marks,
-        r.question,
-        r.options ? JSON.stringify(r.options) : null,
-        r.answer,
-        r.solution,
-        r.source,
-        r.year,
-        r.paper,
-        r.session,
-        r.question_number
-      );
-
-      const ph = cols.map((_, j) => `$${base + j + 1}`);
-      ph[9] = `${ph[9]}::jsonb`;
-      return `(${ph.join(",")})`;
-    });
-
-    const sql = `
-      INSERT INTO public.questions (${cols.join(",")})
-      VALUES ${placeholders.join(",")}
-      ON CONFLICT (question_hash) DO NOTHING
-      RETURNING id
-    `;
-
-    const out = await pool.query(sql, values);
-    return res.json({ ok: true, inserted: out.rowCount, ids: out.rows.map((x) => x.id) });
+    const out = await importQuestionsWithDedupe(questions, { section, difficulty });
+    return res.json({ ok: true, inserted: out.inserted, ids: out.ids });
   } catch (e) {
     console.error("Import questions error:", e);
     return res.status(400).json({ error: e?.message || "Import failed" });
@@ -1295,7 +1114,6 @@ app.post("/api/questions/import", authMiddleware, async (req, res) => {
    Start
 ------------------------- */
 const PORT = process.env.PORT || 4000;
-
 app.listen(PORT, "127.0.0.1", () => {
   console.log(`Backend running on port ${PORT}`);
   console.log(`Password column = ${PASSWORD_COLUMN}`);

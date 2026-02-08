@@ -2,221 +2,149 @@
 import OpenAI from "openai";
 
 const apiKey = process.env.OPENAI_API_KEY;
-if (!apiKey) {
-  throw new Error("OPENAI_API_KEY is missing. Put it in .env or set env var.");
-}
+if (!apiKey) throw new Error("OPENAI_API_KEY missing");
 
 const client = new OpenAI({ apiKey });
-
 const MODEL = process.env.OPENAI_MODEL || "gpt-4.1";
+
+/* ---------------- Utils ---------------- */
 
 function clamp(n, a, b) {
   return Math.max(a, Math.min(b, n));
 }
 
+function normalizeDifficulty(d, fallback = "medium") {
+  const x = String(d || "").toLowerCase().trim();
+  return ["easy", "medium", "hard"].includes(x) ? x : fallback;
+}
+
 function normalizeType(t) {
   const x = String(t || "").toUpperCase();
-  if (x === "MCQ" || x === "MSQ" || x === "NAT") return x;
-  return "MCQ";
+  return x === "MCQ" || x === "MSQ" || x === "NAT" ? x : "MCQ";
 }
 
 function defaultTypeMix(count) {
-  const mcq = Math.max(0, Math.round(count * 0.6));
-  const msq = Math.max(0, Math.round(count * 0.2));
-  let nat = count - mcq - msq;
-  if (nat < 0) nat = 0;
+  const mcq = Math.round(count * 0.6);
+  const msq = Math.round(count * 0.2);
+  const nat = count - mcq - msq;
   return { MCQ: mcq, MSQ: msq, NAT: nat };
 }
 
-function normalizeDifficulty(d, fallback = "medium") {
-  const x = String(d || "").trim().toLowerCase();
-  if (x === "easy" || x === "medium" || x === "hard") return x;
-  return fallback;
+/* ---------- CRITICAL: Safe JSON extractor ---------- */
+
+function safeParseJSON(text) {
+  if (!text) throw new Error("Empty OpenAI response");
+
+  // Remove control chars (kills JSON.parse)
+  let cleaned = text
+    .replace(/[\u0000-\u001F\u007F]/g, "")
+    .replace(/\\(?!["\\/bfnrtu])/g, "\\\\"); // fix bad backslashes
+
+  // Extract last JSON object
+  const match = cleaned.match(/\{[\s\S]*\}$/);
+  if (!match) {
+    throw new Error("OpenAI response does not contain JSON");
+  }
+
+  try {
+    return JSON.parse(match[0]);
+  } catch (e) {
+    console.error("❌ JSON parse failed. Raw snippet:");
+    console.error(match[0].slice(0, 500));
+    throw new Error("OpenAI returned invalid JSON");
+  }
 }
 
-/**
- * Normalizes any provider JSON into the shape your importer expects:
- * questions[] each includes subject/topic/type/question/options/answer/marks/neg_marks/solution/source (+difficulty optional)
- */
+/* ---------- Normalize to DB schema ---------- */
+
 function normalizeOpenAIJson(raw, { section, subject, topic, difficulty }) {
-  const out = raw && typeof raw === "object" ? raw : {};
-
-  const topSubject = String(out.subject || subject || "").trim();
-  const topTopic = String(out.topic || topic || "Mixed").trim();
-  const topSection = String(out.section || section || "EC").trim();
-  const topDifficulty = normalizeDifficulty(out.difficulty || difficulty || "medium", "medium");
-
-  const qs = Array.isArray(out.questions) ? out.questions : [];
-
-  const questions = qs.map((q, idx) => {
-    const type = normalizeType(q?.type);
-    const qSubject = String(q?.subject || topSubject).trim();
-    const qTopic = String(q?.topic || topTopic).trim();
-
-    const question = String(q?.question || "").trim();
-
-    // options: required for MCQ/MSQ, must be null for NAT
-    let options = null;
-    if (type === "NAT") {
-      options = null;
-    } else {
-      const opt = q?.options && typeof q.options === "object" ? q.options : {};
-      options = {
-        A: String(opt.A ?? "").trim(),
-        B: String(opt.B ?? "").trim(),
-        C: String(opt.C ?? "").trim(),
-        D: String(opt.D ?? "").trim(),
-      };
-    }
-
-    // answer normalization
-    let answer = q?.answer;
-    if (type === "MCQ") answer = String(answer ?? "").trim(); // "A"
-    if (type === "MSQ") {
-      if (!Array.isArray(answer)) answer = [];
-      answer = answer.map((x) => String(x).trim()).filter(Boolean).sort();
-    }
-    if (type === "NAT") {
-      // allow number or numeric string; store as string is ok for your DB
-      answer = answer == null ? "" : String(answer).trim();
-    }
-
-    const marks = Number.isFinite(Number(q?.marks)) ? Number(q.marks) : 1;
-    const neg_marks = Number.isFinite(Number(q?.neg_marks)) ? Number(q.neg_marks) : 0.33;
-
-    // map explanation/solution_steps -> solution (your DB column is "solution")
-    const explanation = String(q?.explanation || "").trim();
-    const steps = Array.isArray(q?.solution_steps) ? q.solution_steps : [];
-    const stepsText = steps.length
-      ? `\n\nSteps:\n- ${steps.map((s) => String(s)).join("\n- ")}`
-      : "";
-
-    const solution = (explanation || stepsText) ? `${explanation}${stepsText}`.trim() : "";
-
-    const difficultyOut = normalizeDifficulty(q?.difficulty || topDifficulty, topDifficulty);
-
-    return {
-      subject: qSubject,
-      topic: qTopic,
-      type,
-      question,
-      options,
-      answer,
-      marks,
-      neg_marks,
-      solution,
-      source: "AI",
-      difficulty: difficultyOut, // optional field (harmless even if DB ignores)
-      _meta: { section: topSection, idx },
-    };
-  });
+  const qs = Array.isArray(raw.questions) ? raw.questions : [];
 
   return {
-    section: topSection,
-    subject: topSubject,
-    topic: topTopic,
-    difficulty: topDifficulty,
-    questions,
+    section,
+    subject,
+    topic,
+    difficulty,
+    questions: qs.map((q) => {
+      const type = normalizeType(q.type);
+
+      let options = null;
+      if (type !== "NAT") {
+        options = {
+          A: String(q?.options?.A ?? "").trim(),
+          B: String(q?.options?.B ?? "").trim(),
+          C: String(q?.options?.C ?? "").trim(),
+          D: String(q?.options?.D ?? "").trim(),
+        };
+      }
+
+      let answer = q.answer;
+      if (type === "MSQ" && Array.isArray(answer)) {
+        answer = answer.map(String).sort();
+      }
+      if (type !== "MSQ") {
+        answer = String(answer ?? "").trim();
+      }
+
+      return {
+        subject: String(q.subject || subject).trim(),
+        topic: String(q.topic || topic || "Mixed").trim(),
+        type,
+        question: String(q.question || "").trim(),
+        options,
+        answer,
+        marks: Number(q.marks) || 1,
+        neg_marks: Number(q.neg_marks) || 0.33,
+        solution: String(q.explanation || "").trim(),
+        source: "AI",
+        difficulty,
+      };
+    }),
   };
 }
 
-/**
- * Backend calls this with payload like:
- * {
- *   mode:"subject",
- *   subject, topic, count,
- *   typeMix: {MCQ, MSQ, NAT},
- *   difficulty: "easy|medium|hard"
- * }
- */
+/* ---------------- MAIN ENTRY ---------------- */
+
 export async function generateQuestions({
   section = "EC",
-  subject = "Signals and Systems",
+  subject,
   topic = "Mixed",
   count = 5,
-  // accept BOTH names to avoid mismatch bugs
   typeMix,
-  typesMix,
-  difficulty = "medium", // easy|medium|hard
+  difficulty = "medium",
 } = {}) {
-  const n = clamp(Number(count) || 1, 1, 100);
-
-  const diff = normalizeDifficulty(difficulty, "medium");
-
-  const mix = typeMix || typesMix || defaultTypeMix(n);
-
-  // fix rounding issues if any
-  const mcq = Number(mix.MCQ || 0);
-  const msq = Number(mix.MSQ || 0);
-  let nat = Number(mix.NAT || 0);
-  const sum = mcq + msq + nat;
-  if (sum !== n) nat = n - (mcq + msq);
-
-  const topicLine = topic ? `Focus topic: ${topic}` : "Topic: Mixed";
+  const n = clamp(Number(count), 1, 100);
+  const diff = normalizeDifficulty(difficulty);
+  const mix = typeMix || defaultTypeMix(n);
 
   const prompt = `
-You are generating ORIGINAL GATE-style questions.
-Return ONLY valid JSON (no markdown, no extra text).
+Return ONLY valid JSON. No markdown. No commentary.
 
-Constraints:
-- section: ${section}
-- subject: ${subject}
-- ${topicLine}
-- total questions: ${n}
-- type mix: MCQ=${mcq}, MSQ=${msq}, NAT=${nat}
-- target difficulty: ${diff}
-
-DIFFICULTY RULES (MUST FOLLOW STRICTLY):
-- easy:
-  - direct concept/formula recall
-  - at most 2 short steps
-  - NO trick wording, NO multi-concept coupling
-- medium:
-  - 2–4 steps, one main concept + light secondary idea
-  - can include small trap but not lengthy derivation
-- hard:
-  - 5+ steps OR multi-concept coupling OR lengthy derivation
-  - can include tricky corner cases
-
-FORBIDDEN when difficulty=easy:
-- multi-concept coupling
-- long derivations
-- tricky exceptions/corner cases
-- more than 2 steps in solution_steps
-
-FORBIDDEN when difficulty=medium:
-- more than 4 steps in solution_steps
-- multi-page derivations
-
-Rules:
-- MCQ: exactly 4 options (A-D), single correct (answer="A")
-- MSQ: 4 options (A-D), 2+ correct (answer=["A","C"])
-- NAT: numeric answer (answer=number), options MUST be null
-
-JSON schema:
+Schema:
 {
-  "section": "GE|EC",
-  "subject": "string",
-  "topic": "string",
-  "difficulty": "easy|medium|hard",
   "questions": [
     {
       "type": "MCQ|MSQ|NAT",
       "question": "string",
-      "options": {"A":"", "B":"", "C":"", "D":""} | null,
+      "options": {"A":"","B":"","C":"","D":""} | null,
       "answer": "A" | ["A","C"] | 3.14,
-      "marks": 1|2,
+      "marks": 1,
       "neg_marks": 0.33,
-      "difficulty": "easy|medium|hard",
-      "explanation": "short explanation",
-      "solution_steps": ["step1","step2"]
+      "difficulty": "${diff}",
+      "explanation": "short explanation"
     }
   ]
 }
 
-IMPORTANT:
-- Every question.difficulty MUST equal "${diff}" exactly.
-`.trim();
+Constraints:
+- subject: ${subject}
+- topic: ${topic}
+- difficulty: ${diff}
+- MCQ=${mix.MCQ}, MSQ=${mix.MSQ}, NAT=${mix.NAT}
+- NO latex
+- NO backticks
+- ASCII only
+`;
 
   const resp = await client.responses.create({
     model: MODEL,
@@ -225,15 +153,12 @@ IMPORTANT:
 
   const text = resp.output?.[0]?.content?.[0]?.text || "";
 
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    const m = text.match(/\{[\s\S]*\}$/);
-    if (!m) throw new Error("OpenAI returned non-JSON output.");
-    json = JSON.parse(m[0]);
-  }
+  const json = safeParseJSON(text);
 
-  // normalize output to match your importer expectations
-  return normalizeOpenAIJson(json, { section, subject, topic, difficulty: diff });
+  return normalizeOpenAIJson(json, {
+    section,
+    subject,
+    topic,
+    difficulty: diff,
+  });
 }
