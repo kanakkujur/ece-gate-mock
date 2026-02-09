@@ -1,3 +1,4 @@
+// FILE: ~/gate-frontend/src/Exam.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
 
@@ -5,20 +6,13 @@ function clamp(n, a, b) {
   return Math.max(a, Math.min(b, n));
 }
 
-function sectionOf(q) {
-  const sec = String(q?.section || "").toUpperCase().trim();
-  if (sec === "GE" || sec === "GA") return "GA";
-  if (sec === "EC") return "EC";
-  // fallback by subject name
+function deriveSection(q) {
+  const s = (q?.section || "").trim().toUpperCase();
+  if (s === "GE" || s === "EC") return s;
+  // fallback: GA questions usually have subject "General Aptitude"
   const subj = String(q?.subject || "").toLowerCase();
-  if (subj.includes("aptitude")) return "GA";
+  if (subj.includes("general aptitude")) return "GE";
   return "EC";
-}
-
-function normalizeAns(v) {
-  if (v == null) return "";
-  if (Array.isArray(v)) return v.slice().sort().join(",");
-  return String(v).trim();
 }
 
 /* -------------------------
@@ -66,53 +60,68 @@ export const useExamStore = create((set, get) => ({
 }));
 
 /* -------------------------
+   Attempt helpers
+------------------------- */
+function hasAttempt(v) {
+  if (v === undefined || v === null) return false;
+  if (Array.isArray(v)) return v.length > 0;
+  if (typeof v === "string") return v.trim() !== "";
+  return true;
+}
+
+/* -------------------------
    Exam Component
 ------------------------- */
 export default function Exam({ token, questions = [], meta, onBack, onSubmit }) {
-  const { current, setCurrent, answers, review, visited, markVisited, setAnswer, clearAnswer, setReview, resetExam } =
-    useExamStore();
+  const {
+    current,
+    setCurrent,
+    answers,
+    review,
+    visited,
+    markVisited,
+    setAnswer,
+    clearAnswer,
+    setReview,
+    resetExam,
+  } = useExamStore();
 
   const [timeLeftSec, setTimeLeftSec] = useState(60 * 60);
   const [submitting, setSubmitting] = useState(false);
 
-  // Stage-9: GA/EC tabs like GATE portal
-  const [activeSection, setActiveSection] = useState("GA"); // "GA" | "EC"
-
   const total = questions.length;
   const q = questions[current] || null;
 
-  const indicesBySection = useMemo(() => {
-    const ga = [];
+  const groups = useMemo(() => {
+    const ge = [];
     const ec = [];
-    for (let i = 0; i < questions.length; i++) {
-      const sec = sectionOf(questions[i]);
-      if (sec === "GA") ga.push(i);
-      else ec.push(i);
+    for (const item of questions) {
+      const sec = deriveSection(item);
+      if (sec === "GE") ge.push(item);
+      else ec.push(item);
     }
-    return { GA: ga, EC: ec };
+    return { GE: ge, EC: ec };
   }, [questions]);
 
-  // init section default to GA if present else EC
-  useEffect(() => {
-    const hasGA = indicesBySection.GA.length > 0;
-    setActiveSection(hasGA ? "GA" : "EC");
-  }, [indicesBySection.GA.length, indicesBySection.EC.length]);
+  const sectionCounts = useMemo(() => {
+    return { GE: groups.GE.length, EC: groups.EC.length, TOTAL: total };
+  }, [groups, total]);
 
-  const sectionIndices = activeSection === "GA" ? indicesBySection.GA : indicesBySection.EC;
+  const activeSection = useMemo(() => {
+    if (!q) return "EC";
+    return deriveSection(q);
+  }, [q]);
 
-  function absoluteToSectionNumber(absIdx) {
-    // Real GATE portal:
-    // GA is Q1..Q10
-    // EC is Q11..Q65
-    const sec = sectionOf(questions[absIdx]);
-    if (sec === "GA") {
-      const pos = indicesBySection.GA.indexOf(absIdx);
-      return pos >= 0 ? pos + 1 : absIdx + 1;
-    } else {
-      const pos = indicesBySection.EC.indexOf(absIdx);
-      return pos >= 0 ? indicesBySection.GA.length + (pos + 1) : absIdx + 1;
+  const firstIndexOfSection = useMemo(() => {
+    let ge = -1;
+    let ec = -1;
+    for (let i = 0; i < questions.length; i++) {
+      const sec = deriveSection(questions[i]);
+      if (sec === "GE" && ge === -1) ge = i;
+      if (sec === "EC" && ec === -1) ec = i;
     }
-  }
+    return { GE: ge, EC: ec };
+  }, [questions]);
 
   // Init exam when questions change
   useEffect(() => {
@@ -120,10 +129,8 @@ export default function Exam({ token, questions = [], meta, onBack, onSubmit }) 
     setTimeLeftSec(60 * 60);
 
     if (questions.length) {
-      // go to first GA if exists else first question
-      const firstIdx = indicesBySection.GA.length ? indicesBySection.GA[0] : 0;
-      setCurrent(firstIdx);
-      markVisited(questions[firstIdx]?.id);
+      setCurrent(0);
+      markVisited(questions[0]?.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(questions.map((x) => x?.id ?? ""))]);
@@ -145,41 +152,28 @@ export default function Exam({ token, questions = [], meta, onBack, onSubmit }) 
     return `${hh}:${mm}:${ss}`;
   }, [timeLeftSec]);
 
-  function gotoAbsolute(absIdx) {
-    const next = clamp(absIdx, 0, total - 1);
+  function goto(idx) {
+    const next = clamp(idx, 0, total - 1);
     setCurrent(next);
     const nextQ = questions[next];
     if (nextQ) markVisited(nextQ.id);
   }
 
-  function gotoInActiveSection(sectionPos) {
-    const absIdx = sectionIndices[clamp(sectionPos, 0, sectionIndices.length - 1)];
-    if (absIdx == null) return;
-    gotoAbsolute(absIdx);
-  }
-
-  function gotoNextWithinActiveSection() {
-    const pos = sectionIndices.indexOf(current);
-    if (pos < 0) return;
-    gotoInActiveSection(pos + 1);
-  }
-
-  function gotoPrevWithinActiveSection() {
-    const pos = sectionIndices.indexOf(current);
-    if (pos < 0) return;
-    gotoInActiveSection(pos - 1);
+  function jumpToSection(sec) {
+    const idx = firstIndexOfSection[sec];
+    if (idx != null && idx >= 0) goto(idx);
   }
 
   function saveAndNext() {
     if (!q) return;
     setReview(q.id, false);
-    gotoNextWithinActiveSection();
+    goto(current + 1);
   }
 
   function markForReviewAndNext() {
     if (!q) return;
     setReview(q.id, true);
-    gotoNextWithinActiveSection();
+    goto(current + 1);
   }
 
   function clearResponse() {
@@ -223,8 +217,11 @@ export default function Exam({ token, questions = [], meta, onBack, onSubmit }) 
     setSubmitting(true);
     try {
       await onSubmit({
+        remainingTime: Math.max(0, timeLeftSec),
         answers,
         totalQuestions: total,
+        mode: meta?.mode || "main",
+        subject: meta?.subject || "EC",
       });
 
       alert(isAuto ? "Time up! Test submitted." : "Test submitted ✅");
@@ -278,25 +275,10 @@ export default function Exam({ token, questions = [], meta, onBack, onSubmit }) 
   const qid = q.id;
   const ans = answers[qid];
   const type = (q.type || "MCQ").toUpperCase();
-  const sec = sectionOf(q);
 
-  // If user is in GA tab but current question is EC (or vice versa), auto sync tab
-  useEffect(() => {
-    if (!q) return;
-    const s = sectionOf(q);
-    if (s !== activeSection) setActiveSection(s);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qid]);
-
-  // Palette is now section-scoped (like GATE portal)
-  const palette = sectionIndices.map((absIdx, sectionPos) => {
-    const it = questions[absIdx];
+  const palette = questions.map((it, idx) => {
     const a = answers[it.id];
-    const answered =
-      a !== undefined &&
-      a !== null &&
-      (typeof a === "string" ? a.trim() !== "" : Array.isArray(a) ? a.length > 0 : true);
-
+    const answered = hasAttempt(a);
     const r = !!review[it.id];
     const v = !!visited[it.id];
 
@@ -316,24 +298,20 @@ export default function Exam({ token, questions = [], meta, onBack, onSubmit }) 
       bg = "#ffedd5";
       bd = "#fdba74";
     }
-    if (absIdx === current) bd = "#111827";
+    if (idx === current) bd = "#111827";
 
-    // show actual portal numbering (GA 1-10, EC 11-65)
-    const portalNo = absoluteToSectionNumber(absIdx);
-
-    return { absIdx, sectionPos, portalNo, bg, bd, color };
+    return { idx, bg, bd, color, section: deriveSection(it) };
   });
 
-  const currentPosInSection = sectionIndices.indexOf(current);
+  const paletteGE = palette.filter((p) => p.section === "GE");
+  const paletteEC = palette.filter((p) => p.section === "EC");
 
   return (
     <div style={styles.wrap}>
       <div style={styles.header}>
         <div style={styles.title}>
-          Exam {meta?.mode ? `• ${meta.mode}` : ""} {meta?.subject ? `• ${meta.subject}` : ""}{" "}
-          {meta?.difficulty ? `• ${meta.difficulty}` : ""}
+          Exam {meta?.mode ? `• ${meta.mode}` : ""} {meta?.subject ? `• ${meta.subject}` : ""}
         </div>
-
         <div style={styles.headerRight}>
           <div style={styles.timer}>Time Left: {timeText}</div>
           <button style={styles.btn} onClick={onBack}>
@@ -342,33 +320,36 @@ export default function Exam({ token, questions = [], meta, onBack, onSubmit }) 
         </div>
       </div>
 
-      {/* Stage-9: GA/EC Tabs */}
-      <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+      {/* Section selector like GATE portal */}
+      <div style={styles.sectionBar}>
         <button
-          style={{ ...styles.tabBtn, ...(activeSection === "GA" ? styles.tabBtnActive : {}) }}
           type="button"
-          onClick={() => {
-            setActiveSection("GA");
-            if (indicesBySection.GA.length) gotoAbsolute(indicesBySection.GA[0]);
+          onClick={() => jumpToSection("GE")}
+          style={{
+            ...styles.sectionBtn,
+            borderColor: activeSection === "GE" ? "#111827" : "#e5e7eb",
+            background: activeSection === "GE" ? "#111827" : "#fff",
+            color: activeSection === "GE" ? "#fff" : "#111827",
           }}
-          disabled={!indicesBySection.GA.length}
-          title="General Aptitude"
         >
-          GA ({indicesBySection.GA.length})
+          GA (GE) • {sectionCounts.GE}
+        </button>
+        <button
+          type="button"
+          onClick={() => jumpToSection("EC")}
+          style={{
+            ...styles.sectionBtn,
+            borderColor: activeSection === "EC" ? "#111827" : "#e5e7eb",
+            background: activeSection === "EC" ? "#111827" : "#fff",
+            color: activeSection === "EC" ? "#fff" : "#111827",
+          }}
+        >
+          ECE (EC) • {sectionCounts.EC}
         </button>
 
-        <button
-          style={{ ...styles.tabBtn, ...(activeSection === "EC" ? styles.tabBtnActive : {}) }}
-          type="button"
-          onClick={() => {
-            setActiveSection("EC");
-            if (indicesBySection.EC.length) gotoAbsolute(indicesBySection.EC[0]);
-          }}
-          disabled={!indicesBySection.EC.length}
-          title="Electronics & Communication"
-        >
-          EC ({indicesBySection.EC.length})
-        </button>
+        <div style={{ marginLeft: "auto", fontSize: 12, opacity: 0.75 }}>
+          Total: <b>{sectionCounts.TOTAL}</b>
+        </div>
       </div>
 
       <div style={styles.grid}>
@@ -377,15 +358,10 @@ export default function Exam({ token, questions = [], meta, onBack, onSubmit }) 
             <div style={styles.qTop}>
               <div>
                 <div style={styles.qNo}>
-                  {/* Stage-9: show portal numbering */}
-                  Question {absoluteToSectionNumber(current)} / {total}{" "}
-                  <span style={{ opacity: 0.6, fontWeight: 700 }}>
-                    • Section {sec} • In-section {currentPosInSection + 1}/{sectionIndices.length}
-                  </span>
+                  Question {current + 1} / {total}
                 </div>
-
                 <div style={styles.qMeta}>
-                  <span style={styles.badge}>{sec}</span>
+                  <span style={styles.badge}>{deriveSection(q)}</span>
                   <span style={styles.badge}>{q.subject || "Unknown"}</span>
                   {q.topic ? <span style={styles.badgeMuted}>{q.topic}</span> : null}
                   <span style={styles.badgeMuted}>{type}</span>
@@ -449,7 +425,7 @@ export default function Exam({ token, questions = [], meta, onBack, onSubmit }) 
               <button style={styles.btn} onClick={markForReviewAndNext}>
                 Mark for Review & Next
               </button>
-              <button style={styles.btnPrimary} onClick={saveAndNext} disabled={currentPosInSection >= sectionIndices.length - 1}>
+              <button style={styles.btnPrimary} onClick={saveAndNext} disabled={current >= total - 1}>
                 Save & Next
               </button>
             </div>
@@ -464,9 +440,7 @@ export default function Exam({ token, questions = [], meta, onBack, onSubmit }) 
 
         <div>
           <div style={styles.card}>
-            <div style={{ fontWeight: 900, marginBottom: 10 }}>
-              Question Palette <span style={{ opacity: 0.6 }}>• {activeSection}</span>
-            </div>
+            <div style={{ fontWeight: 900, marginBottom: 10 }}>Question Palette</div>
 
             <div style={styles.legend}>
               <span style={{ ...styles.legendItem, background: "#dcfce7", borderColor: "#86efac" }}>Answered</span>
@@ -475,54 +449,40 @@ export default function Exam({ token, questions = [], meta, onBack, onSubmit }) 
               <span style={{ ...styles.legendItem, background: "#f1f5f9", borderColor: "#e2e8f0" }}>Not visited</span>
             </div>
 
+            <div style={styles.sectionLabel}>GA (GE)</div>
             <div style={styles.palette}>
-              {palette.map((p) => (
+              {paletteGE.map((p) => (
                 <button
-                  key={p.absIdx}
+                  key={`ge-${p.idx}`}
                   style={{ ...styles.pill, background: p.bg, borderColor: p.bd, color: p.color }}
-                  onClick={() => gotoAbsolute(p.absIdx)}
+                  onClick={() => goto(p.idx)}
                 >
-                  {p.portalNo}
+                  {p.idx + 1}
+                </button>
+              ))}
+            </div>
+
+            <div style={styles.sectionLabel}>ECE (EC)</div>
+            <div style={styles.palette}>
+              {paletteEC.map((p) => (
+                <button
+                  key={`ec-${p.idx}`}
+                  style={{ ...styles.pill, background: p.bg, borderColor: p.bd, color: p.color }}
+                  onClick={() => goto(p.idx)}
+                >
+                  {p.idx + 1}
                 </button>
               ))}
             </div>
 
             <div style={{ marginTop: 14, display: "flex", gap: 10 }}>
-              <button style={styles.btn} onClick={gotoPrevWithinActiveSection} disabled={currentPosInSection <= 0}>
+              <button style={styles.btn} onClick={() => goto(current - 1)} disabled={current <= 0}>
                 Previous
               </button>
-              <button
-                style={styles.btn}
-                onClick={gotoNextWithinActiveSection}
-                disabled={currentPosInSection >= sectionIndices.length - 1}
-              >
+              <button style={styles.btn} onClick={() => goto(current + 1)} disabled={current >= total - 1}>
                 Next
               </button>
             </div>
-          </div>
-
-          {/* Quick “switch section” helper like portal */}
-          <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
-            <button
-              style={styles.btn}
-              onClick={() => {
-                setActiveSection("GA");
-                if (indicesBySection.GA.length) gotoAbsolute(indicesBySection.GA[0]);
-              }}
-              disabled={!indicesBySection.GA.length}
-            >
-              Go to GA
-            </button>
-            <button
-              style={styles.btn}
-              onClick={() => {
-                setActiveSection("EC");
-                if (indicesBySection.EC.length) gotoAbsolute(indicesBySection.EC[0]);
-              }}
-              disabled={!indicesBySection.EC.length}
-            >
-              Go to EC
-            </button>
           </div>
         </div>
       </div>
@@ -546,7 +506,7 @@ const styles = {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 14,
+    marginBottom: 10,
   },
   headerRight: { display: "flex", gap: 10, alignItems: "center" },
   title: { fontSize: 18, fontWeight: 900 },
@@ -557,18 +517,24 @@ const styles = {
     border: "1px solid #e2e8f0",
     fontWeight: 800,
   },
-  tabBtn: {
-    padding: "8px 12px",
+  sectionBar: {
+    display: "flex",
+    gap: 10,
+    alignItems: "center",
+    marginBottom: 14,
+    padding: 10,
+    border: "1px solid #e5e7eb",
+    borderRadius: 14,
+    background: "#fff",
+    boxShadow: "0 10px 24px rgba(15, 23, 42, 0.04)",
+  },
+  sectionBtn: {
+    padding: "10px 12px",
     borderRadius: 12,
     border: "1px solid #e5e7eb",
-    background: "#ffffff",
-    fontWeight: 900,
+    background: "#fff",
     cursor: "pointer",
-  },
-  tabBtnActive: {
-    border: "1px solid #111827",
-    background: "#111827",
-    color: "#ffffff",
+    fontWeight: 900,
   },
   grid: {
     display: "grid",
@@ -591,7 +557,7 @@ const styles = {
     background: "#e8f0ff",
     border: "1px solid #c7d2fe",
     fontSize: 12,
-    fontWeight: 800,
+    fontWeight: 900,
   },
   badgeMuted: {
     padding: "4px 10px",
@@ -663,6 +629,7 @@ const styles = {
     cursor: "pointer",
   },
   smallMuted: { fontSize: 12, opacity: 0.75 },
+  sectionLabel: { marginTop: 12, fontWeight: 900, fontSize: 12, opacity: 0.8 },
   palette: { display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 8, marginTop: 10 },
   pill: {
     padding: "10px 0",

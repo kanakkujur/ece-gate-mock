@@ -1,5 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "./api.js";
+// FILE: ~/gate-frontend/src/Review.jsx
+import DesignReview from "./DesignReview.jsx";
+export default DesignReview;
+
 
 function normalize(v) {
   if (v == null) return "";

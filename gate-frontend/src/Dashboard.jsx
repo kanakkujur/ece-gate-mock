@@ -2,83 +2,28 @@
 import React, { useMemo, useState } from "react";
 
 /**
- * Stage-8 polish (hardened):
- * - AI Subject Generator OPTIONAL (collapsed by default)
+ * Stage-8 polish:
+ * - AI Subject Generator is OPTIONAL (collapsed by default)
  * - Main start difficulty remains
- * - Defensive rendering: NEVER render objects directly (prevents white-screen crash)
+ *
+ * Stage-9/10:
+ * - Adds "Review" button on each history item (opens DesignReview.jsx)
  */
 
 function clamp(n, a, b) {
   return Math.max(a, Math.min(b, n));
 }
 
-function isPlainObject(v) {
-  return v && typeof v === "object" && !Array.isArray(v);
-}
-
-function toNumberOrNull(v) {
-  if (v == null) return null;
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string") {
-    const x = Number(v);
-    return Number.isFinite(x) ? x : null;
-  }
-  return null;
-}
-
-function safeText(v, fallback = "—") {
-  if (v == null) return fallback;
-  if (typeof v === "string") return v;
-  if (typeof v === "number" || typeof v === "boolean") return String(v);
-  if (Array.isArray(v)) return v.map((x) => safeText(x, "")).filter(Boolean).join(", ") || fallback;
-  if (isPlainObject(v)) {
-    // Avoid React crash: stringify objects
-    try {
-      return JSON.stringify(v);
-    } catch {
-      return fallback;
-    }
-  }
-  return fallback;
-}
-
-function formatScore(v) {
-  const n = toNumberOrNull(v);
-  if (n == null) return "—";
-  // keep negative allowed
-  return Number.isInteger(n) ? String(n) : n.toFixed(2);
-}
-
-function formatPct(v) {
-  const n = toNumberOrNull(v);
-  if (n == null) return "—";
-  return `${n.toFixed(2)}%`;
-}
-
-function formatDateISO(v) {
-  if (!v) return "—";
-  try {
-    const d = new Date(v);
-    if (Number.isNaN(d.getTime())) return safeText(v, "—");
-    return d.toISOString();
-  } catch {
-    return safeText(v, "—");
-  }
-}
-
 function Pie({ correct = 0, total = 0 }) {
-  const t = toNumberOrNull(total) ?? 0;
-  const c0 = toNumberOrNull(correct) ?? 0;
-
-  if (!t || t <= 0) {
+  if (!total || total <= 0) {
     return <div style={{ padding: 12, textAlign: "center", opacity: 0.7 }}>N/A</div>;
   }
 
   const r = 46;
-  const circ = 2 * Math.PI * r;
-  const pct = clamp(c0 / t, 0, 1);
-  const dash = circ * pct;
-  const gap = circ - dash;
+  const c = 2 * Math.PI * r;
+  const pct = clamp(correct / total, 0, 1);
+  const dash = c * pct;
+  const gap = c - dash;
 
   return (
     <div style={{ display: "grid", placeItems: "center", gap: 10 }}>
@@ -104,8 +49,8 @@ function Pie({ correct = 0, total = 0 }) {
       </svg>
 
       <div style={{ display: "flex", gap: 14, fontSize: 13, opacity: 0.9 }}>
-        <span>✅ {Math.max(0, Math.round(c0))}/{Math.max(0, Math.round(t))}</span>
-        <span>❌ {Math.max(0, Math.round(t - c0))}</span>
+        <span>✅ {correct}/{total}</span>
+        <span>❌ {total - correct}</span>
       </div>
     </div>
   );
@@ -135,6 +80,9 @@ export default function Dashboard({
   onStartMain = () => {},
   onStartSubject = (_subject) => {},
 
+  // Stage-9/10: open review
+  onOpenReview = (_testId) => {},
+
   // Stage-6B props:
   aiGen = null,
   aiGenLoading = false,
@@ -144,15 +92,24 @@ export default function Dashboard({
 
   // Stage-8: optionally show AI generator block
   showAIGeneratorDefault = false,
+
+  // controlled by App (optional)
+  mainDifficulty: mainDifficultyProp,
+  setMainDifficulty: setMainDifficultyProp,
+  startingMain: startingMainProp,
 }) {
   const [mode, setMode] = useState("main");
   const [subject, setSubject] = useState("Networks");
 
-  // Main start difficulty
-  const [mainDifficulty, setMainDifficulty] = useState("medium");
-  const [startingMain, setStartingMain] = useState(false);
+  // Main start difficulty (supports controlled + uncontrolled)
+  const [mainDifficultyLocal, setMainDifficultyLocal] = useState("medium");
+  const mainDifficulty = mainDifficultyProp ?? mainDifficultyLocal;
+  const setMainDifficulty = setMainDifficultyProp ?? setMainDifficultyLocal;
 
-  // AI generator collapsed by default
+  const [startingMainLocal, setStartingMainLocal] = useState(false);
+  const startingMain = startingMainProp ?? startingMainLocal;
+
+  // Stage-8: AI generator collapsed by default
   const [showAIGen, setShowAIGen] = useState(!!showAIGeneratorDefault);
 
   // AI subject generation inputs
@@ -173,7 +130,6 @@ export default function Dashboard({
 
   const latest = filteredHistory[0] || null;
 
-  // total questions can come under many names
   const latestTotal =
     latest?.totalquestions ??
     latest?.totalQuestions ??
@@ -181,60 +137,35 @@ export default function Dashboard({
     latest?.total_questions ??
     null;
 
-  const latestAcc = toNumberOrNull(latest?.accuracy);
+  const latestAcc = latest?.accuracy != null ? Number(latest.accuracy) : null;
 
-  // correct estimate from accuracy + total
   const latestCorrect =
-    latestAcc != null && toNumberOrNull(latestTotal) != null
-      ? Math.round((latestAcc / 100) * Number(latestTotal))
-      : 0;
+    latestAcc != null && latestTotal ? Math.round((latestAcc / 100) * Number(latestTotal)) : 0;
 
   const avg = useMemo(() => {
     if (!filteredHistory.length) return null;
     const n = filteredHistory.length;
-
     let sumScore = 0;
     let sumAcc = 0;
-    let cntScore = 0;
-    let cntAcc = 0;
-
     for (const h of filteredHistory) {
-      const s = toNumberOrNull(h?.score);
-      const a = toNumberOrNull(h?.accuracy);
-      if (s != null) {
-        sumScore += s;
-        cntScore += 1;
-      }
-      if (a != null) {
-        sumAcc += a;
-        cntAcc += 1;
-      }
+      sumScore += Number(h?.score ?? 0);
+      sumAcc += Number(h?.accuracy ?? 0);
     }
-
-    return {
-      attempts: n,
-      avgScore: cntScore ? sumScore / cntScore : 0,
-      avgAccuracy: cntAcc ? sumAcc / cntAcc : 0,
-    };
+    return { attempts: n, avgScore: sumScore / n, avgAccuracy: sumAcc / n };
   }, [filteredHistory]);
 
   const hasData = filteredHistory.length > 0;
 
   async function handleStartMain() {
     try {
-      setStartingMain(true);
+      if (startingMainProp == null) setStartingMainLocal(true);
       const diff = normalizeDifficulty(mainDifficulty);
-
-      const maybePromise =
-        onStartMain.length >= 1 ? onStartMain({ difficulty: diff }) : onStartMain();
-
-      if (maybePromise && typeof maybePromise.then === "function") {
-        await maybePromise;
-      }
+      const maybePromise = onStartMain.length >= 1 ? onStartMain({ difficulty: diff }) : onStartMain();
+      if (maybePromise && typeof maybePromise.then === "function") await maybePromise;
     } catch (e) {
       alert(e?.message || "Failed to start main test");
     } finally {
-      setStartingMain(false);
+      if (startingMainProp == null) setStartingMainLocal(false);
     }
   }
 
@@ -284,24 +215,15 @@ export default function Dashboard({
 
   return (
     <div className="dashWrap">
-      {/* OVERVIEW */}
       <section className="tile">
         <div className="tileHeader">
           <h2>Overview</h2>
 
           <div className="modeRow">
-            <button
-              className={`segBtn ${mode === "main" ? "active" : ""}`}
-              onClick={() => setMode("main")}
-              type="button"
-            >
+            <button className={`segBtn ${mode === "main" ? "active" : ""}`} onClick={() => setMode("main")} type="button">
               Main
             </button>
-            <button
-              className={`segBtn ${mode === "subject" ? "active" : ""}`}
-              onClick={() => setMode("subject")}
-              type="button"
-            >
+            <button className={`segBtn ${mode === "subject" ? "active" : ""}`} onClick={() => setMode("subject")} type="button">
               Subject-wise
             </button>
 
@@ -318,21 +240,24 @@ export default function Dashboard({
         <div className="topGrid">
           <div className="card">
             <div className="cardTitle">Latest test</div>
-
-            {hasData ? (
-              <Pie correct={latestCorrect} total={toNumberOrNull(latestTotal) ?? 0} />
-            ) : (
-              <div className="naBox">N/A</div>
-            )}
+            {hasData ? <Pie correct={latestCorrect} total={Number(latestTotal || 0)} /> : <div className="naBox">N/A</div>}
 
             {hasData && (
               <div className="mini">
                 <div>
-                  Score: <b>{formatScore(latest?.score)}</b>
+                  Score: <b>{latest?.score ?? "N/A"}</b>
                 </div>
                 <div>
-                  Accuracy: <b>{formatPct(latest?.accuracy)}</b>
+                  Accuracy: <b>{latest?.accuracy ?? "N/A"}</b>
                 </div>
+
+                {latest?.id ? (
+                  <div style={{ marginTop: 10 }}>
+                    <button className="segBtn" type="button" onClick={() => onOpenReview(latest.id)}>
+                      Review latest
+                    </button>
+                  </div>
+                ) : null}
               </div>
             )}
           </div>
@@ -347,11 +272,11 @@ export default function Dashboard({
                 </div>
                 <div className="avgItem">
                   <div className="avgLabel">Avg score</div>
-                  <div className="avgValue">{formatScore(avg.avgScore)}</div>
+                  <div className="avgValue">{avg.avgScore.toFixed(2)}</div>
                 </div>
                 <div className="avgItem">
                   <div className="avgLabel">Avg accuracy</div>
-                  <div className="avgValue">{formatPct(avg.avgAccuracy)}</div>
+                  <div className="avgValue">{avg.avgAccuracy.toFixed(2)}%</div>
                 </div>
               </div>
             ) : (
@@ -363,30 +288,19 @@ export default function Dashboard({
 
       <hr className="sep" />
 
-      {/* START */}
       <section className="tile">
         <h2>Start a test</h2>
 
         <div className="startRow" style={{ alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           {mode === "main" ? (
             <>
-              <button
-                className="primaryBtn"
-                onClick={handleStartMain}
-                type="button"
-                disabled={startingMain}
-              >
+              <button className="primaryBtn" onClick={handleStartMain} type="button" disabled={startingMain}>
                 {startingMain ? "Starting…" : "Start Main Mock (65)"}
               </button>
 
               <label style={{ display: "grid", gap: 4 }}>
                 <span style={{ fontSize: 12, opacity: 0.75 }}>Difficulty</span>
-                <select
-                  className="sel"
-                  value={mainDifficulty}
-                  onChange={(e) => setMainDifficulty(e.target.value)}
-                  disabled={startingMain}
-                >
+                <select className="sel" value={mainDifficulty} onChange={(e) => setMainDifficulty(e.target.value)} disabled={startingMain}>
                   <option value="easy">easy</option>
                   <option value="medium">medium</option>
                   <option value="hard">hard</option>
@@ -405,7 +319,7 @@ export default function Dashboard({
 
       <hr className="sep" />
 
-      {/* AI (OPTIONAL) */}
+      {/* Stage-8: Optional AI block */}
       <section className="tile">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
           <h2 style={{ margin: 0 }}>AI Subject Generator (Optional)</h2>
@@ -437,23 +351,12 @@ export default function Dashboard({
 
                 <label style={{ display: "grid", gap: 4 }}>
                   <span style={{ fontSize: 12, opacity: 0.75 }}>Topic</span>
-                  <input
-                    className="sel"
-                    value={aiTopic}
-                    onChange={(e) => setAiTopic(e.target.value)}
-                    placeholder="Basics / Mixed / etc"
-                  />
+                  <input className="sel" value={aiTopic} onChange={(e) => setAiTopic(e.target.value)} placeholder="Basics / Mixed / etc" />
                 </label>
 
                 <label style={{ display: "grid", gap: 4 }}>
                   <span style={{ fontSize: 12, opacity: 0.75 }}>Count</span>
-                  <input
-                    className="sel"
-                    style={{ width: 120 }}
-                    value={aiCount}
-                    onChange={(e) => setAiCount(e.target.value)}
-                    inputMode="numeric"
-                  />
+                  <input className="sel" style={{ width: 120 }} value={aiCount} onChange={(e) => setAiCount(e.target.value)} inputMode="numeric" />
                 </label>
 
                 <label style={{ display: "grid", gap: 4 }}>
@@ -486,8 +389,7 @@ export default function Dashboard({
                 {aiGen && Array.isArray(aiGen?.questions) ? (
                   <div style={{ display: "grid", gap: 10 }}>
                     <div style={{ fontSize: 13, opacity: 0.9 }}>
-                      Returned: <b>{aiGen.questions.length}</b> questions • Subject:{" "}
-                      <b>{safeText(aiGen.subject, aiSubject)}</b> • Topic: <b>{safeText(aiGen.topic, aiTopic)}</b>
+                      Returned: <b>{aiGen.questions.length}</b> questions • Subject: <b>{aiGen.subject || aiSubject}</b> • Topic: <b>{aiGen.topic || aiTopic}</b>
                     </div>
 
                     <div style={{ fontSize: 12, opacity: 0.75 }}>
@@ -506,10 +408,9 @@ export default function Dashboard({
                             }}
                           >
                             <div style={{ fontSize: 12, opacity: 0.75 }}>
-                              #{p.i + 1} • <b>{safeText(p.type)}</b> • difficulty=<b>{safeText(p.difficulty, "—")}</b> •{" "}
-                              {safeText(p.subject)} • {safeText(p.topic)}
+                              #{p.i + 1} • <b>{p.type}</b> • difficulty=<b>{p.difficulty ?? "—"}</b> • {p.subject} • {p.topic}
                             </div>
-                            <div style={{ marginTop: 6, fontSize: 13 }}>{safeText(p.question)}</div>
+                            <div style={{ marginTop: 6, fontSize: 13 }}>{p.question}</div>
                           </div>
                         ))}
                       </div>
@@ -528,30 +429,33 @@ export default function Dashboard({
 
       <hr className="sep" />
 
-      {/* HISTORY */}
       <section className="tile">
         <h2>History</h2>
 
         {filteredHistory.length ? (
           <div className="histList">
-            {filteredHistory.map((h, idx) => {
-              const total =
-                h?.totalQuestions ?? h?.totalquestions ?? h?.total ?? h?.total_questions ?? "—";
-              return (
-                <div className="histItem" key={h?.id ?? idx}>
-                  <div className="histLeft">
-                    <div className="histTop">
-                      <b>Score:</b> {formatScore(h?.score)} <span className="dot">•</span>{" "}
-                      <b>Accuracy:</b> {formatPct(h?.accuracy)}
+            {filteredHistory.map((h, idx) => (
+              <div className="histItem" key={h?.id ?? idx}>
+                <div className="histLeft" style={{ width: "100%" }}>
+                  <div className="histTop" style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <div>
+                      <b>Score:</b> {h?.score ?? "—"} <span className="dot">•</span> <b>Accuracy:</b> {h?.accuracy ?? "—"}
                     </div>
-                    <div className="histBottom">
-                      Total: {safeText(total)} <span className="dot">•</span>{" "}
-                      Time: {formatDateISO(h?.created_at)}
-                    </div>
+
+                    {h?.id ? (
+                      <button className="segBtn" type="button" onClick={() => onOpenReview(h.id)}>
+                        Review
+                      </button>
+                    ) : null}
+                  </div>
+
+                  <div className="histBottom">
+                    Total: {h?.totalQuestions ?? h?.totalquestions ?? "—"} <span className="dot">•</span> Time:{" "}
+                    {h?.created_at ? new Date(h.created_at).toISOString() : "—"}
                   </div>
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </div>
         ) : (
           <div className="naBox">N/A</div>

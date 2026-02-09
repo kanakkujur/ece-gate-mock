@@ -5,6 +5,7 @@ import { useAuthStore } from "./authStore.js";
 import Login from "./Login.jsx";
 import Dashboard from "./Dashboard.jsx";
 import Exam from "./Exam.jsx";
+import DesignReview from "./DesignReview.jsx";
 import "./dashboard.css";
 
 /** Simple ErrorBoundary to avoid “white screen” */
@@ -62,14 +63,68 @@ class ErrorBoundary extends React.Component {
 }
 
 function normalizeHistoryResponse(data) {
-  // supports either:
-  // 1) array: [...]
-  // 2) { history: [...] }
-  // 3) { sessions: [...] }
   if (Array.isArray(data)) return data;
   if (data && Array.isArray(data.history)) return data.history;
   if (data && Array.isArray(data.sessions)) return data.sessions;
   return [];
+}
+
+async function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Supports BOTH backend shapes:
+ * A) start-main returns { jobId } and we poll /start-main/status?jobId=...
+ * B) start-main returns { testId, questions, blueprint } immediately
+ */
+async function startMainAndFetchQuestions({ token, difficulty }) {
+  const start = await apiFetch("/test/start-main", {
+    token,
+    method: "POST",
+    body: { difficulty },
+  });
+
+  // If immediate questions exist, just return them
+  if (start && Array.isArray(start.questions) && start.questions.length) {
+    return {
+      testId: start.testId ?? null,
+      questions: start.questions,
+      blueprint: start.blueprint ?? null,
+      jobId: null,
+    };
+  }
+
+  // If async job
+  const jobId = start?.jobId;
+  if (!jobId) {
+    // unknown response shape
+    return { testId: null, questions: [], blueprint: null, jobId: null };
+  }
+
+  // Poll status
+  for (let i = 0; i < 240; i++) {
+    const s = await apiFetch(`/test/start-main/status?jobId=${encodeURIComponent(jobId)}`, {
+      token,
+      method: "GET",
+    });
+
+    if (s?.status === "done") {
+      const result = s?.result || {};
+      return {
+        testId: result.testId ?? null,
+        questions: Array.isArray(result.questions) ? result.questions : [],
+        blueprint: result.blueprint ?? null,
+        jobId,
+      };
+    }
+    if (s?.status === "error") {
+      throw new Error(s?.error || "start-main failed");
+    }
+    await sleep(800);
+  }
+
+  throw new Error("start-main timed out (polling exceeded)");
 }
 
 export default function App() {
@@ -80,7 +135,7 @@ export default function App() {
   const clearSession = useAuthStore((s) => s.clearSession);
 
   // UI screens
-  const [screen, setScreen] = useState("dashboard"); // "dashboard" | "exam"
+  const [screen, setScreen] = useState("dashboard"); // "dashboard" | "exam" | "review"
 
   // data
   const [history, setHistory] = useState([]);
@@ -95,6 +150,9 @@ export default function App() {
     testId: null,
     blueprint: null,
   });
+
+  // review state
+  const [reviewTestId, setReviewTestId] = useState(null);
 
   // Main start
   const [mainDifficulty, setMainDifficulty] = useState("medium");
@@ -189,6 +247,7 @@ export default function App() {
                     testId: null,
                     blueprint: null,
                   });
+                  setReviewTestId(null);
                 }}
                 style={{
                   padding: "7px 10px",
@@ -209,20 +268,20 @@ export default function App() {
     );
   }, [isAuthed, email, clearSession, token, blueprint]);
 
-  // Start MAIN
+  // Start MAIN (supports jobId polling)
   async function onStartMain() {
     if (!token) return;
 
     setStartingMain(true);
     try {
-      const data = await apiFetch("/test/start-main", {
+      const out = await startMainAndFetchQuestions({
         token,
-        method: "POST",
-        body: { difficulty: mainDifficulty },
+        difficulty: mainDifficulty,
       });
 
-      const qs = data?.questions || [];
+      const qs = out?.questions || [];
       if (!Array.isArray(qs) || qs.length === 0) {
+        // fallback
         const fallback = await apiFetch(`/test/generate?count=65&subjects=EC`, { token });
         const fqs = fallback?.questions || [];
         if (!fqs.length) throw new Error("No questions returned");
@@ -243,8 +302,8 @@ export default function App() {
         mode: "main",
         subject: "EC",
         difficulty: mainDifficulty,
-        testId: data?.testId ?? null,
-        blueprint: data?.blueprint ?? null,
+        testId: out?.testId ?? null,
+        blueprint: out?.blueprint ?? null,
       });
       setScreen("exam");
     } catch (e) {
@@ -278,28 +337,45 @@ export default function App() {
     }
   }
 
-  async function onExamSubmit({ score, accuracy, answers, totalQuestions }) {
+  async function refreshHistory() {
+    if (!token) return;
+    const data = await apiFetch("/test/history", { token });
+    setHistory(normalizeHistoryResponse(data));
+  }
+
+  async function onExamSubmit({ remainingTime, answers, totalQuestions, mode, subject }) {
     try {
-      await apiFetch("/test/submit", {
+      const resp = await apiFetch("/test/submit", {
         token,
         method: "POST",
         body: {
-          score,
-          accuracy,
+          mode: mode || examMeta?.mode || "main",
+          subject: subject || examMeta?.subject || null,
+          remainingTime: remainingTime ?? 0,
+          totalQuestions: totalQuestions,
           answers,
-          totalQuestions,
-          mode: examMeta?.mode || "main",
-          subject: examMeta?.subject || null,
           testId: examMeta?.testId ?? null,
         },
       });
 
-      const data = await apiFetch("/test/history", { token });
-      setHistory(normalizeHistoryResponse(data));
-      setScreen("dashboard");
+      await refreshHistory();
+
+      // Go directly to review of this test
+      const tid = resp?.testId ?? examMeta?.testId ?? null;
+      if (tid) {
+        setReviewTestId(tid);
+        setScreen("review");
+      } else {
+        setScreen("dashboard");
+      }
     } catch (e) {
       alert(e?.message || "Submit failed");
     }
+  }
+
+  function onOpenReview(testId) {
+    setReviewTestId(testId);
+    setScreen("review");
   }
 
   // AI Subject Generate + Import
@@ -390,19 +466,27 @@ export default function App() {
             setMainDifficulty={setMainDifficulty}
             startingMain={startingMain}
             onStartSubject={onStartSubject}
+            onOpenReview={onOpenReview}
             aiGen={aiGen}
             aiGenLoading={aiGenLoading}
             aiImportLoading={aiImportLoading}
             onAIGenerateSubject={onAIGenerateSubject}
             onAIImportGenerated={onAIImportGenerated}
           />
-        ) : (
+        ) : screen === "exam" ? (
           <Exam
             token={token}
             questions={examQuestions}
             meta={examMeta}
             onBack={() => setScreen("dashboard")}
             onSubmit={onExamSubmit}
+          />
+        ) : (
+          <DesignReview
+            token={token}
+            testId={reviewTestId}
+            onBack={() => setScreen("dashboard")}
+            onOpenExamAgain={() => setScreen("dashboard")}
           />
         )}
       </div>
