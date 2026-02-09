@@ -1,4 +1,3 @@
-// FILE: ~/gate-frontend/src/Exam.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
 
@@ -8,10 +7,14 @@ function clamp(n, a, b) {
 
 /* -------------------------
    Zustand Exam Store
+   answers shape (Stage-7):
+   {
+     [questionId]: { type: "MCQ|MSQ|NAT", answer: "A" | ["A","C"] | "3.14" }
+   }
 ------------------------- */
 export const useExamStore = create((set, get) => ({
   current: 0,
-  answers: {}, // { [qid]: "A" | ["A","C"] | "12.5" }
+  answers: {}, // { [qid]: {type, answer} }
   review: {}, // { [qid]: true }
   visited: {}, // { [qid]: true }
 
@@ -22,9 +25,9 @@ export const useExamStore = create((set, get) => ({
       visited: { ...s.visited, [qid]: true },
     })),
 
-  setAnswer: (qid, val) =>
+  setAnswer: (qid, type, answerVal) =>
     set((s) => ({
-      answers: { ...s.answers, [qid]: val },
+      answers: { ...s.answers, [qid]: { type, answer: answerVal } },
     })),
 
   clearAnswer: (qid) =>
@@ -51,41 +54,15 @@ export const useExamStore = create((set, get) => ({
 }));
 
 /* -------------------------
-   Scoring helpers (simple)
+   Attempt detection
 ------------------------- */
-function normalizeAns(v) {
-  if (v == null) return "";
-  if (Array.isArray(v)) return v.slice().sort().join(",");
-  return String(v).trim();
-}
-
-function computeScoreAndAccuracy(questions, answers) {
-  let correct = 0;
-
-  for (const q of questions) {
-    const user = answers[q.id];
-
-    const hasAttempt =
-      user !== undefined &&
-      user !== null &&
-      (typeof user === "string"
-        ? user.trim() !== ""
-        : Array.isArray(user)
-        ? user.length > 0
-        : true);
-
-    if (!hasAttempt) continue;
-    if (q.answer == null) continue;
-
-    const u = normalizeAns(user);
-    const a = normalizeAns(q.answer);
-    if (u === a) correct += 1;
-  }
-
-  const total = questions.length || 0;
-  const score = correct; // simple: 1 per correct
-  const accuracy = total ? (correct / total) * 100 : 0;
-  return { score, accuracy };
+function hasAttempt(entry) {
+  if (!entry) return false;
+  const v = entry.answer;
+  if (v === undefined || v === null) return false;
+  if (typeof v === "string") return v.trim() !== "";
+  if (Array.isArray(v)) return v.length > 0;
+  return true;
 }
 
 /* -------------------------
@@ -166,23 +143,23 @@ export default function Exam({ token, questions = [], meta, onBack, onSubmit }) 
 
   function selectMcq(optKey) {
     if (!q) return;
-    setAnswer(q.id, optKey);
+    setAnswer(q.id, "MCQ", optKey);
   }
 
   function toggleMsq(optKey) {
     if (!q) return;
-    const prev = answers[q.id];
+    const prev = answers[q.id]?.answer;
     const arr = Array.isArray(prev) ? prev.slice() : [];
     const i = arr.indexOf(optKey);
     if (i >= 0) arr.splice(i, 1);
     else arr.push(optKey);
     arr.sort();
-    setAnswer(q.id, arr);
+    setAnswer(q.id, "MSQ", arr);
   }
 
   function setNat(val) {
     if (!q) return;
-    setAnswer(q.id, String(val ?? ""));
+    setAnswer(q.id, "NAT", String(val ?? ""));
   }
 
   async function submitTest(isAuto = false) {
@@ -199,13 +176,22 @@ export default function Exam({ token, questions = [], meta, onBack, onSubmit }) 
 
     setSubmitting(true);
     try {
-      const { score, accuracy } = computeScoreAndAccuracy(questions, answers);
+      // Build answers payload exactly how backend expects (Stage-7)
+      const payloadAnswers = {};
+      for (const qq of questions) {
+        const entry = answers[qq.id];
+        if (!hasAttempt(entry)) continue;
+
+        payloadAnswers[String(qq.id)] = {
+          type: (entry.type || qq.type || "MCQ").toUpperCase(),
+          answer: entry.answer,
+        };
+      }
 
       await onSubmit({
-        score,
-        accuracy,
-        answers,
+        answers: payloadAnswers,
         totalQuestions: total,
+        remainingTime: timeLeftSec,
       });
 
       alert(isAuto ? "Time up! Test submitted." : "Test submitted ✅");
@@ -257,16 +243,12 @@ export default function Exam({ token, questions = [], meta, onBack, onSubmit }) 
   }
 
   const qid = q.id;
-  const ans = answers[qid];
+  const entry = answers[qid];
+  const ans = entry?.answer;
   const type = (q.type || "MCQ").toUpperCase();
 
   const palette = questions.map((it, idx) => {
-    const a = answers[it.id];
-    const answered =
-      a !== undefined &&
-      a !== null &&
-      (typeof a === "string" ? a.trim() !== "" : Array.isArray(a) ? a.length > 0 : true);
-
+    const attempted = hasAttempt(answers[it.id]);
     const r = !!review[it.id];
     const v = !!visited[it.id];
 
@@ -278,7 +260,7 @@ export default function Exam({ token, questions = [], meta, onBack, onSubmit }) 
       bg = "#e8f0ff";
       bd = "#c7d2fe";
     }
-    if (answered) {
+    if (attempted) {
       bg = "#dcfce7";
       bd = "#86efac";
     }

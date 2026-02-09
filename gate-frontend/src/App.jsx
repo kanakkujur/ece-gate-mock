@@ -1,4 +1,3 @@
-// FILE: ~/gate-frontend/src/App.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "./api.js";
 import { useAuthStore } from "./authStore.js";
@@ -31,13 +30,12 @@ export default function App() {
     blueprint: null,
   });
 
-  // =========================
-  // STAGE-6C (Main start with difficulty)
-  // =========================
+  // Stage-6C: main start difficulty + buffering
   const [mainDifficulty, setMainDifficulty] = useState("medium"); // easy|medium|hard
   const [startingMain, setStartingMain] = useState(false);
+  const [startProgress, setStartProgress] = useState(null);
 
-  // STAGE-6B (AI Subject Generate)
+  // Stage-6B: AI Subject Generate
   const [aiGen, setAiGen] = useState(null);
   const [aiGenLoading, setAiGenLoading] = useState(false);
   const [aiImportLoading, setAiImportLoading] = useState(false);
@@ -89,12 +87,10 @@ export default function App() {
               <button
                 onClick={async () => {
                   try {
-                    // toggle OFF
                     if (blueprint !== null) {
                       setBlueprint(null);
                       return;
                     }
-                    // toggle ON (fetch)
                     const data = await apiFetch("/ai/blueprint?mode=main", { token });
                     setBlueprint(data);
                   } catch (e) {
@@ -148,48 +144,66 @@ export default function App() {
     );
   }, [isAuthed, email, clearSession, token, blueprint]);
 
+  function normalizeDifficulty(v) {
+    const x = String(v || "").toLowerCase().trim();
+    return x === "easy" || x === "medium" || x === "hard" ? x : "medium";
+  }
+
+  // Poll helper for Stage-6C jobs
+  async function pollStartMainJob(jobId) {
+    const startAt = Date.now();
+    while (true) {
+      const s = await apiFetch(`/test/start-main/status?jobId=${encodeURIComponent(jobId)}`, { token });
+      setStartProgress(s);
+
+      if (s.status === "done") return s;
+      if (s.status === "error") throw new Error(s.error || "start-main job failed");
+
+      // basic timeout guard (10 minutes)
+      if (Date.now() - startAt > 10 * 60 * 1000) {
+        throw new Error("start-main timed out (took too long)");
+      }
+
+      await new Promise((r) => setTimeout(r, 800));
+    }
+  }
+
   // =========================
-  // STAGE-6C: Start MAIN via backend orchestration
-  // POST /api/test/start-main { difficulty }
-  // Expected response: { testId, questions, blueprint }
+  // STAGE-6C: Start MAIN (job + poll)
+  // POST /api/test/start-main { difficulty } -> { ok, jobId }
+  // then poll status endpoint until done -> result contains testId+questions+blueprint
   // =========================
   async function onStartMain() {
     if (!token) return;
 
     setStartingMain(true);
+    setStartProgress(null);
+
     try {
-      // Stage-6C path
-      const data = await apiFetch("/test/start-main", {
+      const diff = normalizeDifficulty(mainDifficulty);
+
+      const start = await apiFetch("/test/start-main", {
         token,
         method: "POST",
-        body: { difficulty: mainDifficulty },
+        body: { difficulty: diff },
       });
 
-      const qs = data?.questions || [];
-      if (!Array.isArray(qs) || qs.length === 0) {
-        // Fallback to old behavior if backend not fully implemented yet
-        const fallback = await apiFetch(`/test/generate?count=65&subjects=EC`, { token });
-        const fqs = fallback?.questions || [];
-        if (!fqs.length) throw new Error("No questions returned");
-        setExamQuestions(fqs);
-        setExamMeta({
-          mode: "main",
-          subject: "EC",
-          difficulty: mainDifficulty,
-          testId: null,
-          blueprint: null,
-        });
-        setScreen("exam");
-        return;
-      }
+      const jobId = start?.jobId;
+      if (!jobId) throw new Error("Backend did not return jobId");
+
+      const status = await pollStartMainJob(jobId);
+      const result = status?.result;
+
+      const qs = result?.questions || [];
+      if (!Array.isArray(qs) || qs.length === 0) throw new Error("No questions returned from job result");
 
       setExamQuestions(qs);
       setExamMeta({
         mode: "main",
         subject: "EC",
-        difficulty: mainDifficulty,
-        testId: data?.testId ?? null,
-        blueprint: data?.blueprint ?? null,
+        difficulty: diff,
+        testId: result?.testId ?? null,
+        blueprint: result?.blueprint ?? null,
       });
       setScreen("exam");
     } catch (e) {
@@ -199,13 +213,11 @@ export default function App() {
     }
   }
 
-  // Start SUBJECT-WISE: (existing DB bank path)
+  // Start SUBJECT-WISE (existing DB bank path)
   async function onStartSubject(subject) {
     try {
       const subj = subject || "EC";
-      const data = await apiFetch(`/test/generate?count=65&subjects=${encodeURIComponent(subj)}`, {
-        token,
-      });
+      const data = await apiFetch(`/test/generate?count=65&subjects=${encodeURIComponent(subj)}`, { token });
       const qs = data?.questions || [];
       if (!qs.length) throw new Error("No questions returned");
 
@@ -223,21 +235,18 @@ export default function App() {
     }
   }
 
-  async function onExamSubmit({ score, accuracy, answers, totalQuestions }) {
+  // Submit (Stage-7): backend computes score/accuracy/maxScore
+  async function onExamSubmit({ answers, totalQuestions, remainingTime }) {
     try {
-      await apiFetch("/test/submit", {
+      const out = await apiFetch("/test/submit", {
         token,
         method: "POST",
         body: {
-          score,
-          accuracy,
-          answers,
-          totalQuestions,
           mode: examMeta?.mode || "main",
           subject: examMeta?.subject || null,
-          // testId is not used by your current /test/submit handler,
-          // but sending it is harmless and future-proof if you add support later.
-          testId: examMeta?.testId ?? null,
+          remainingTime: Number(remainingTime ?? 0),
+          totalQuestions: totalQuestions ?? 65,
+          answers, // already in Stage-7 shape
         },
       });
 
@@ -245,7 +254,11 @@ export default function App() {
       const data = await apiFetch("/test/history", { token });
       setHistory(Array.isArray(data) ? data : []);
 
+      // back to dashboard
       setScreen("dashboard");
+
+      // optional small toast
+      // alert(`Submitted ✅ score=${out?.score ?? "?"} acc=${out?.accuracy ?? "?"}`);
     } catch (e) {
       alert(e?.message || "Submit failed");
     }
@@ -264,7 +277,7 @@ export default function App() {
         subject,
         topic,
         count,
-        difficulty, // Stage-6B
+        difficulty,
       };
 
       const data = await apiFetch("/ai/generate", {
@@ -283,9 +296,7 @@ export default function App() {
   async function onAIImportGenerated() {
     if (!token) throw new Error("Missing token");
     const qs = aiGen?.questions;
-    if (!Array.isArray(qs) || qs.length === 0) {
-      throw new Error("No generated questions to import");
-    }
+    if (!Array.isArray(qs) || qs.length === 0) throw new Error("No generated questions to import");
 
     setAiImportLoading(true);
     try {
@@ -335,14 +346,12 @@ export default function App() {
       {screen === "dashboard" ? (
         <Dashboard
           history={loadingHistory ? [] : history}
-          // Stage-6C props for Main start UI:
           onStartMain={onStartMain}
           mainDifficulty={mainDifficulty}
           setMainDifficulty={setMainDifficulty}
           startingMain={startingMain}
-          // Subject wise start:
+          startProgress={startProgress}
           onStartSubject={onStartSubject}
-          // Stage-6B props:
           aiGen={aiGen}
           aiGenLoading={aiGenLoading}
           aiImportLoading={aiImportLoading}

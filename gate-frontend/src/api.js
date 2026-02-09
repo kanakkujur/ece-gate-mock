@@ -29,7 +29,6 @@ export async function apiFetch(path, { token, method = "GET", body } = {}) {
   }
 
   if (res.status === 401) {
-    // token expired/invalid
     useAuthStore.getState().clearSession();
   }
 

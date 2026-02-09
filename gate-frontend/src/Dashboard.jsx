@@ -1,15 +1,4 @@
-// FILE: ~/gate-frontend/src/Dashboard.jsx
 import React, { useMemo, useState } from "react";
-
-/**
- * Stage-6B (Option A):
- * - AI Subject Generator difficulty dropdown (easy/medium/hard)
- *
- * Stage-6C (Main start):
- * - Difficulty dropdown beside "Start Main Mock (65)"
- * - When clicked, show buffering overlay while backend generates/picks questions
- * - Calls onStartMain({ difficulty })
- */
 
 function clamp(n, a, b) {
   return Math.max(a, Math.min(b, n));
@@ -58,15 +47,16 @@ function Pie({ correct = 0, total = 0 }) {
 }
 
 const SUBJECTS = [
-  "Networks",
-  "Digital Electronics",
-  "Control Systems",
-  "Signals and Systems",
-  "Analog Circuits",
-  "Communication",
-  "Electromagnetics",
-  "Electronic Devices",
   "Engineering Mathematics",
+  "Networks",
+  "Signals & Systems",
+  "Electronic Devices",
+  "Analog Circuits",
+  "Digital Circuits",
+  "Control Systems",
+  "Communication Systems",
+  "Electromagnetics",
+  "Computer Organization",
 ];
 
 function normalizeDifficulty(v) {
@@ -74,7 +64,10 @@ function normalizeDifficulty(v) {
   return x === "easy" || x === "medium" || x === "hard" ? x : "medium";
 }
 
-function BufferingOverlay({ title = "Generating questions…", subtitle = "Please wait" }) {
+function BufferingOverlay({ title, subtitle, progress }) {
+  const percent = progress?.percent ?? null;
+  const step = progress?.step ?? null;
+
   return (
     <div
       style={{
@@ -89,7 +82,7 @@ function BufferingOverlay({ title = "Generating questions…", subtitle = "Pleas
     >
       <div
         style={{
-          width: "min(520px, 92vw)",
+          width: "min(560px, 92vw)",
           background: "white",
           border: "1px solid rgba(0,0,0,0.12)",
           borderRadius: 16,
@@ -100,7 +93,7 @@ function BufferingOverlay({ title = "Generating questions…", subtitle = "Pleas
         <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>{title}</div>
         <div style={{ fontSize: 13, opacity: 0.75, marginBottom: 14 }}>{subtitle}</div>
 
-        {/* “YouTube buffering” vibe: shimmer bar */}
+        {/* shimmer bar */}
         <div
           style={{
             height: 10,
@@ -122,8 +115,18 @@ function BufferingOverlay({ title = "Generating questions…", subtitle = "Pleas
           />
         </div>
 
-        <div style={{ marginTop: 12, fontSize: 12, opacity: 0.65 }}>
-          This can take some time when AI has to generate new questions.
+        <div style={{ marginTop: 12, fontSize: 12, opacity: 0.75 }}>
+          {percent != null ? (
+            <>
+              <b>{percent}%</b> • {step || "Working…"}
+              <div style={{ marginTop: 6, opacity: 0.75 }}>
+                Generated: {progress?.generatedInserted ?? 0}/{progress?.generatedTarget ?? 0} • Buckets:{" "}
+                {progress?.generatedBucketsDone ?? 0}/{progress?.generatedBucketsTotal ?? 0}
+              </div>
+            </>
+          ) : (
+            "This can take some time when AI has to generate new questions."
+          )}
         </div>
 
         <style>{`
@@ -140,41 +143,38 @@ function BufferingOverlay({ title = "Generating questions…", subtitle = "Pleas
 export default function Dashboard({
   history = [],
 
-  // Stage-6C: expect onStartMain({ difficulty })
-  // (If you still pass a no-arg function, this code still works, but difficulty won't be used)
+  // Stage-6C via App.jsx
   onStartMain = () => {},
+  mainDifficulty = "medium",
+  setMainDifficulty = () => {},
+  startingMain = false,
+  startProgress = null,
+
+  // Subject start
   onStartSubject = (_subject) => {},
 
-  // Stage-6B props:
+  // Stage-6B props
   aiGen = null,
   aiGenLoading = false,
   aiImportLoading = false,
   onAIGenerateSubject = null,
   onAIImportGenerated = null,
 }) {
-  // type selector: "main" or "subject"
   const [mode, setMode] = useState("main");
-  const [subject, setSubject] = useState("Networks"); // used in subject mode
+  const [subject, setSubject] = useState(SUBJECTS[0]);
 
-  // Stage-6C (Main start difficulty + buffering overlay)
-  const [mainDifficulty, setMainDifficulty] = useState("medium"); // easy|medium|hard
-  const [startingMain, setStartingMain] = useState(false);
-
-  // Stage-6B (AI subject generation inputs)
-  const [aiSubject, setAiSubject] = useState("Networks");
+  // Stage-6B inputs
+  const [aiSubject, setAiSubject] = useState(SUBJECTS[0]);
   const [aiTopic, setAiTopic] = useState("Basics");
   const [aiCount, setAiCount] = useState(5);
-  const [aiDifficulty, setAiDifficulty] = useState("medium"); // easy|medium|hard
+  const [aiDifficulty, setAiDifficulty] = useState("medium");
 
   const filteredHistory = useMemo(() => {
     if (!Array.isArray(history) || history.length === 0) return [];
-
     return history.filter((h) => {
       const hMode = h?.mode || "main";
       if (hMode !== mode) return false;
-      if (mode === "subject") {
-        return (h?.subject || "") === subject;
-      }
+      if (mode === "subject") return (h?.subject || "") === subject;
       return true;
     });
   }, [history, mode, subject]);
@@ -189,49 +189,28 @@ export default function Dashboard({
     null;
 
   const latestAcc = latest?.accuracy != null ? Number(latest.accuracy) : null;
-
   const latestCorrect =
     latestAcc != null && latestTotal ? Math.round((latestAcc / 100) * Number(latestTotal)) : 0;
 
   const avg = useMemo(() => {
     if (!filteredHistory.length) return null;
-
     const n = filteredHistory.length;
     let sumScore = 0;
     let sumAcc = 0;
-
     for (const h of filteredHistory) {
       sumScore += Number(h?.score ?? 0);
       sumAcc += Number(h?.accuracy ?? 0);
     }
-    return {
-      attempts: n,
-      avgScore: sumScore / n,
-      avgAccuracy: sumAcc / n,
-    };
+    return { attempts: n, avgScore: sumScore / n, avgAccuracy: sumAcc / n };
   }, [filteredHistory]);
 
   const hasData = filteredHistory.length > 0;
 
   async function handleStartMain() {
     try {
-      setStartingMain(true);
-      const diff = normalizeDifficulty(mainDifficulty);
-
-      // Supports both signatures:
-      // - onStartMain() old
-      // - onStartMain({difficulty}) new for Stage-6C
-      const maybePromise =
-        onStartMain.length >= 1 ? onStartMain({ difficulty: diff }) : onStartMain();
-
-      // If it returns a promise, await it
-      if (maybePromise && typeof maybePromise.then === "function") {
-        await maybePromise;
-      }
+      await onStartMain();
     } catch (e) {
       alert(e?.message || "Failed to start main test");
-    } finally {
-      setStartingMain(false);
     }
   }
 
@@ -242,12 +221,12 @@ export default function Dashboard({
     }
     try {
       const c = clamp(parseInt(aiCount, 10) || 5, 1, 50);
-      const diff = String(aiDifficulty || "medium").toLowerCase();
+      const diff = normalizeDifficulty(aiDifficulty);
       await onAIGenerateSubject({
         subject: aiSubject,
         topic: aiTopic || "Mixed",
         count: c,
-        difficulty: diff, // ✅ Stage-6B requirement
+        difficulty: diff,
       });
     } catch (e) {
       alert(e?.message || "AI generate failed");
@@ -285,6 +264,7 @@ export default function Dashboard({
         <BufferingOverlay
           title="Generating questions for Main Mock (65)…"
           subtitle={`Difficulty: ${normalizeDifficulty(mainDifficulty)} • Please wait while we prepare your test`}
+          progress={startProgress}
         />
       ) : null}
 
@@ -294,11 +274,7 @@ export default function Dashboard({
           <h2>Overview</h2>
 
           <div className="modeRow">
-            <button
-              className={`segBtn ${mode === "main" ? "active" : ""}`}
-              onClick={() => setMode("main")}
-              type="button"
-            >
+            <button className={`segBtn ${mode === "main" ? "active" : ""}`} onClick={() => setMode("main")} type="button">
               Main
             </button>
             <button
@@ -320,14 +296,9 @@ export default function Dashboard({
         </div>
 
         <div className="topGrid">
-          {/* t1 */}
           <div className="card">
             <div className="cardTitle">Latest test</div>
-            {hasData ? (
-              <Pie correct={latestCorrect} total={Number(latestTotal || 0)} />
-            ) : (
-              <div className="naBox">N/A</div>
-            )}
+            {hasData ? <Pie correct={latestCorrect} total={Number(latestTotal || 0)} /> : <div className="naBox">N/A</div>}
 
             {hasData && (
               <div className="mini">
@@ -341,7 +312,6 @@ export default function Dashboard({
             )}
           </div>
 
-          {/* t2 */}
           <div className="card">
             <div className="cardTitle">Average (all tests)</div>
             {avg ? (
@@ -368,7 +338,7 @@ export default function Dashboard({
 
       <hr className="sep" />
 
-      {/* MID TILE */}
+      {/* START TILE */}
       <section className="tile">
         <h2>Start a test</h2>
 
@@ -405,19 +375,17 @@ export default function Dashboard({
             </button>
           )}
 
-          <div className="hint">
-            No “number of questions” selector — always 65 (Main: 10 GA + 55 EC).
-          </div>
+          <div className="hint">Always 65 questions (Main: 10 GA + 55 EC).</div>
         </div>
       </section>
 
-      {/* STAGE-6B: AI SUBJECT GENERATION (Option A) */}
+      {/* AI SUBJECT GEN */}
       <hr className="sep" />
       <section className="tile">
         <h2>AI Subject Generator (Stage-6B)</h2>
 
         <div className="hint" style={{ marginBottom: 10 }}>
-          Generates questions via <b>/api/ai/generate</b> in <b>subject</b> mode only. Existing flows unchanged.
+          Generates questions via <b>/api/ai/generate</b> in <b>subject</b> mode only.
         </div>
 
         <div style={{ display: "grid", gap: 10 }}>
@@ -433,23 +401,12 @@ export default function Dashboard({
 
             <label style={{ display: "grid", gap: 4 }}>
               <span style={{ fontSize: 12, opacity: 0.75 }}>Topic</span>
-              <input
-                className="sel"
-                value={aiTopic}
-                onChange={(e) => setAiTopic(e.target.value)}
-                placeholder="Basics / Mixed / etc"
-              />
+              <input className="sel" value={aiTopic} onChange={(e) => setAiTopic(e.target.value)} placeholder="Basics / Mixed / etc" />
             </label>
 
             <label style={{ display: "grid", gap: 4 }}>
               <span style={{ fontSize: 12, opacity: 0.75 }}>Count</span>
-              <input
-                className="sel"
-                style={{ width: 120 }}
-                value={aiCount}
-                onChange={(e) => setAiCount(e.target.value)}
-                inputMode="numeric"
-              />
+              <input className="sel" style={{ width: 120 }} value={aiCount} onChange={(e) => setAiCount(e.target.value)} inputMode="numeric" />
             </label>
 
             <label style={{ display: "grid", gap: 4 }}>
@@ -476,19 +433,17 @@ export default function Dashboard({
             </button>
           </div>
 
-          {/* Confirmation / preview */}
           <div className="card" style={{ marginTop: 6 }}>
             <div className="cardTitle">Latest AI response</div>
 
             {aiGen && Array.isArray(aiGen?.questions) ? (
               <div style={{ display: "grid", gap: 10 }}>
                 <div style={{ fontSize: 13, opacity: 0.9 }}>
-                  Returned: <b>{aiGen.questions.length}</b> questions • Subject:{" "}
-                  <b>{aiGen.subject || aiSubject}</b> • Topic: <b>{aiGen.topic || aiTopic}</b>
+                  Returned: <b>{aiGen.questions.length}</b> • Subject: <b>{aiGen.subject || aiSubject}</b> • Topic: <b>{aiGen.topic || aiTopic}</b>
                 </div>
 
                 <div style={{ fontSize: 12, opacity: 0.75 }}>
-                  Expected difficulty: <b>{aiDifficulty}</b>
+                  Expected difficulty: <b>{normalizeDifficulty(aiDifficulty)}</b>
                 </div>
 
                 {aiPreview ? (
@@ -503,8 +458,7 @@ export default function Dashboard({
                         }}
                       >
                         <div style={{ fontSize: 12, opacity: 0.75 }}>
-                          #{p.i + 1} • <b>{p.type}</b> • difficulty=<b>{p.difficulty ?? "—"}</b> •{" "}
-                          {p.subject} • {p.topic}
+                          #{p.i + 1} • <b>{p.type}</b> • difficulty=<b>{p.difficulty ?? "—"}</b> • {p.subject} • {p.topic}
                         </div>
                         <div style={{ marginTop: 6, fontSize: 13 }}>{p.question}</div>
                       </div>
@@ -523,7 +477,7 @@ export default function Dashboard({
 
       <hr className="sep" />
 
-      {/* BOTTOM TILE */}
+      {/* HISTORY */}
       <section className="tile">
         <h2>History</h2>
 
@@ -533,8 +487,7 @@ export default function Dashboard({
               <div className="histItem" key={h?.id ?? idx}>
                 <div className="histLeft">
                   <div className="histTop">
-                    <b>Score:</b> {h?.score ?? "—"} <span className="dot">•</span>{" "}
-                    <b>Accuracy:</b> {h?.accuracy ?? "—"}
+                    <b>Score:</b> {h?.score ?? "—"} <span className="dot">•</span> <b>Accuracy:</b> {h?.accuracy ?? "—"}
                   </div>
                   <div className="histBottom">
                     Total: {h?.totalQuestions ?? h?.totalquestions ?? "—"} <span className="dot">•</span>{" "}
