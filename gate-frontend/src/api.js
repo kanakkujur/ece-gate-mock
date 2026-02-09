@@ -1,3 +1,4 @@
+// FILE: ~/gate-frontend/src/api.js
 import { useAuthStore } from "./authStore.js";
 
 const API = import.meta.env.VITE_API_BASE || "/api";
@@ -5,6 +6,7 @@ const API = import.meta.env.VITE_API_BASE || "/api";
 /**
  * apiFetch
  * - Uses Authorization: Bearer <token> automatically (unless token explicitly provided)
+ * - Never crashes on invalid JSON (returns { raw: "..." })
  * - On 401, clears auth session (so UI returns to Login)
  */
 export async function apiFetch(path, { token, method = "GET", body } = {}) {
@@ -21,6 +23,7 @@ export async function apiFetch(path, { token, method = "GET", body } = {}) {
   });
 
   const text = await res.text();
+
   let data = null;
   try {
     data = text ? JSON.parse(text) : null;
@@ -33,7 +36,21 @@ export async function apiFetch(path, { token, method = "GET", body } = {}) {
   }
 
   if (!res.ok) {
-    throw new Error(data?.error || `Request failed (${res.status})`);
+    // Prefer backend error field, otherwise show raw
+    const msg =
+      data?.error ||
+      (data?.raw ? String(data.raw).slice(0, 400) : null) ||
+      `Request failed (${res.status})`;
+    throw new Error(msg);
   }
+
+  // If backend returned 200 but body isn't JSON, surface it clearly
+  if (data && typeof data === "object" && "raw" in data) {
+    throw new Error(
+      `Backend returned invalid JSON for ${path}. Raw:\n` +
+        String(data.raw).slice(0, 400)
+    );
+  }
+
   return data;
 }

@@ -1,4 +1,11 @@
+// FILE: ~/gate-frontend/src/Dashboard.jsx
 import React, { useMemo, useState } from "react";
+
+/**
+ * Stage-8 polish:
+ * - AI Subject Generator is OPTIONAL (collapsed by default)
+ * - Main start difficulty remains
+ */
 
 function clamp(n, a, b) {
   return Math.max(a, Math.min(b, n));
@@ -47,15 +54,15 @@ function Pie({ correct = 0, total = 0 }) {
 }
 
 const SUBJECTS = [
-  "Engineering Mathematics",
   "Networks",
-  "Signals & Systems",
-  "Electronic Devices",
-  "Analog Circuits",
   "Digital Circuits",
   "Control Systems",
+  "Signals & Systems",
+  "Analog Circuits",
   "Communication Systems",
   "Electromagnetics",
+  "Electronic Devices",
+  "Engineering Mathematics",
   "Computer Organization",
 ];
 
@@ -64,107 +71,34 @@ function normalizeDifficulty(v) {
   return x === "easy" || x === "medium" || x === "hard" ? x : "medium";
 }
 
-function BufferingOverlay({ title, subtitle, progress }) {
-  const percent = progress?.percent ?? null;
-  const step = progress?.step ?? null;
-
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(15,23,42,0.35)",
-        display: "grid",
-        placeItems: "center",
-        zIndex: 9999,
-        padding: 16,
-      }}
-    >
-      <div
-        style={{
-          width: "min(560px, 92vw)",
-          background: "white",
-          border: "1px solid rgba(0,0,0,0.12)",
-          borderRadius: 16,
-          boxShadow: "0 20px 50px rgba(15, 23, 42, 0.18)",
-          padding: 18,
-        }}
-      >
-        <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>{title}</div>
-        <div style={{ fontSize: 13, opacity: 0.75, marginBottom: 14 }}>{subtitle}</div>
-
-        {/* shimmer bar */}
-        <div
-          style={{
-            height: 10,
-            borderRadius: 999,
-            overflow: "hidden",
-            background: "rgba(0,0,0,0.06)",
-            border: "1px solid rgba(0,0,0,0.08)",
-          }}
-        >
-          <div
-            style={{
-              height: "100%",
-              width: "40%",
-              borderRadius: 999,
-              background:
-                "linear-gradient(90deg, rgba(17,24,39,0.08), rgba(17,24,39,0.30), rgba(17,24,39,0.08))",
-              animation: "shimmer 1.1s linear infinite",
-            }}
-          />
-        </div>
-
-        <div style={{ marginTop: 12, fontSize: 12, opacity: 0.75 }}>
-          {percent != null ? (
-            <>
-              <b>{percent}%</b> • {step || "Working…"}
-              <div style={{ marginTop: 6, opacity: 0.75 }}>
-                Generated: {progress?.generatedInserted ?? 0}/{progress?.generatedTarget ?? 0} • Buckets:{" "}
-                {progress?.generatedBucketsDone ?? 0}/{progress?.generatedBucketsTotal ?? 0}
-              </div>
-            </>
-          ) : (
-            "This can take some time when AI has to generate new questions."
-          )}
-        </div>
-
-        <style>{`
-          @keyframes shimmer {
-            0% { transform: translateX(-60%); }
-            100% { transform: translateX(260%); }
-          }
-        `}</style>
-      </div>
-    </div>
-  );
-}
-
 export default function Dashboard({
   history = [],
 
-  // Stage-6C via App.jsx
   onStartMain = () => {},
-  mainDifficulty = "medium",
-  setMainDifficulty = () => {},
-  startingMain = false,
-  startProgress = null,
-
-  // Subject start
   onStartSubject = (_subject) => {},
 
-  // Stage-6B props
+  // Stage-6B props:
   aiGen = null,
   aiGenLoading = false,
   aiImportLoading = false,
   onAIGenerateSubject = null,
   onAIImportGenerated = null,
+
+  // Stage-8: optionally show AI generator block
+  showAIGeneratorDefault = false,
 }) {
   const [mode, setMode] = useState("main");
-  const [subject, setSubject] = useState(SUBJECTS[0]);
+  const [subject, setSubject] = useState("Networks");
 
-  // Stage-6B inputs
-  const [aiSubject, setAiSubject] = useState(SUBJECTS[0]);
+  // Main start difficulty
+  const [mainDifficulty, setMainDifficulty] = useState("medium");
+  const [startingMain, setStartingMain] = useState(false);
+
+  // Stage-8: AI generator collapsed by default
+  const [showAIGen, setShowAIGen] = useState(!!showAIGeneratorDefault);
+
+  // AI subject generation inputs
+  const [aiSubject, setAiSubject] = useState("Networks");
   const [aiTopic, setAiTopic] = useState("Basics");
   const [aiCount, setAiCount] = useState(5);
   const [aiDifficulty, setAiDifficulty] = useState("medium");
@@ -189,6 +123,7 @@ export default function Dashboard({
     null;
 
   const latestAcc = latest?.accuracy != null ? Number(latest.accuracy) : null;
+
   const latestCorrect =
     latestAcc != null && latestTotal ? Math.round((latestAcc / 100) * Number(latestTotal)) : 0;
 
@@ -208,9 +143,19 @@ export default function Dashboard({
 
   async function handleStartMain() {
     try {
-      await onStartMain();
+      setStartingMain(true);
+      const diff = normalizeDifficulty(mainDifficulty);
+
+      const maybePromise =
+        onStartMain.length >= 1 ? onStartMain({ difficulty: diff }) : onStartMain();
+
+      if (maybePromise && typeof maybePromise.then === "function") {
+        await maybePromise;
+      }
     } catch (e) {
       alert(e?.message || "Failed to start main test");
+    } finally {
+      setStartingMain(false);
     }
   }
 
@@ -260,15 +205,6 @@ export default function Dashboard({
 
   return (
     <div className="dashWrap">
-      {startingMain ? (
-        <BufferingOverlay
-          title="Generating questions for Main Mock (65)…"
-          subtitle={`Difficulty: ${normalizeDifficulty(mainDifficulty)} • Please wait while we prepare your test`}
-          progress={startProgress}
-        />
-      ) : null}
-
-      {/* TOP TILE */}
       <section className="tile">
         <div className="tileHeader">
           <h2>Overview</h2>
@@ -338,31 +274,19 @@ export default function Dashboard({
 
       <hr className="sep" />
 
-      {/* START TILE */}
       <section className="tile">
         <h2>Start a test</h2>
 
         <div className="startRow" style={{ alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           {mode === "main" ? (
             <>
-              <button
-                className="primaryBtn"
-                onClick={handleStartMain}
-                type="button"
-                disabled={startingMain}
-                title="Starts a Main mock using difficulty + AI/DB logic (Stage-6C)"
-              >
+              <button className="primaryBtn" onClick={handleStartMain} type="button" disabled={startingMain}>
                 {startingMain ? "Starting…" : "Start Main Mock (65)"}
               </button>
 
               <label style={{ display: "grid", gap: 4 }}>
                 <span style={{ fontSize: 12, opacity: 0.75 }}>Difficulty</span>
-                <select
-                  className="sel"
-                  value={mainDifficulty}
-                  onChange={(e) => setMainDifficulty(e.target.value)}
-                  disabled={startingMain}
-                >
+                <select className="sel" value={mainDifficulty} onChange={(e) => setMainDifficulty(e.target.value)} disabled={startingMain}>
                   <option value="easy">easy</option>
                   <option value="medium">medium</option>
                   <option value="hard">hard</option>
@@ -375,109 +299,122 @@ export default function Dashboard({
             </button>
           )}
 
-          <div className="hint">Always 65 questions (Main: 10 GA + 55 EC).</div>
+          <div className="hint">Always 65 questions (Main: 10 GE + 55 EC).</div>
         </div>
       </section>
 
-      {/* AI SUBJECT GEN */}
       <hr className="sep" />
-      <section className="tile">
-        <h2>AI Subject Generator (Stage-6B)</h2>
 
-        <div className="hint" style={{ marginBottom: 10 }}>
-          Generates questions via <b>/api/ai/generate</b> in <b>subject</b> mode only.
+      {/* Stage-8: Optional AI block */}
+      <section className="tile">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+          <h2 style={{ margin: 0 }}>AI Subject Generator (Optional)</h2>
+          <button className="segBtn" type="button" onClick={() => setShowAIGen((s) => !s)}>
+            {showAIGen ? "Hide" : "Show"}
+          </button>
         </div>
 
-        <div style={{ display: "grid", gap: 10 }}>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <label style={{ display: "grid", gap: 4 }}>
-              <span style={{ fontSize: 12, opacity: 0.75 }}>Subject</span>
-              <select className="sel" value={aiSubject} onChange={(e) => setAiSubject(e.target.value)}>
-                {SUBJECTS.map((s) => (
-                  <option key={s}>{s}</option>
-                ))}
-              </select>
-            </label>
-
-            <label style={{ display: "grid", gap: 4 }}>
-              <span style={{ fontSize: 12, opacity: 0.75 }}>Topic</span>
-              <input className="sel" value={aiTopic} onChange={(e) => setAiTopic(e.target.value)} placeholder="Basics / Mixed / etc" />
-            </label>
-
-            <label style={{ display: "grid", gap: 4 }}>
-              <span style={{ fontSize: 12, opacity: 0.75 }}>Count</span>
-              <input className="sel" style={{ width: 120 }} value={aiCount} onChange={(e) => setAiCount(e.target.value)} inputMode="numeric" />
-            </label>
-
-            <label style={{ display: "grid", gap: 4 }}>
-              <span style={{ fontSize: 12, opacity: 0.75 }}>Difficulty</span>
-              <select className="sel" value={aiDifficulty} onChange={(e) => setAiDifficulty(e.target.value)}>
-                <option value="easy">easy</option>
-                <option value="medium">medium</option>
-                <option value="hard">hard</option>
-              </select>
-            </label>
-
-            <button className="primaryBtn" type="button" onClick={handleAIGenerate} disabled={aiGenLoading}>
-              {aiGenLoading ? "Generating…" : "Generate AI Questions"}
-            </button>
-
-            <button
-              className="segBtn"
-              type="button"
-              onClick={handleAIImport}
-              disabled={aiImportLoading || !(Array.isArray(aiGen?.questions) && aiGen.questions.length)}
-              title="Imports latest generated questions into DB"
-            >
-              {aiImportLoading ? "Importing…" : "Import to DB"}
-            </button>
+        {!showAIGen ? (
+          <div className="hint" style={{ marginTop: 8 }}>
+            Hidden by default (not required for exam portal experience).
           </div>
+        ) : (
+          <>
+            <div className="hint" style={{ marginTop: 8, marginBottom: 10 }}>
+              Generates via <b>/api/ai/generate</b> in <b>subject</b> mode (dev utility).
+            </div>
 
-          <div className="card" style={{ marginTop: 6 }}>
-            <div className="cardTitle">Latest AI response</div>
-
-            {aiGen && Array.isArray(aiGen?.questions) ? (
-              <div style={{ display: "grid", gap: 10 }}>
-                <div style={{ fontSize: 13, opacity: 0.9 }}>
-                  Returned: <b>{aiGen.questions.length}</b> • Subject: <b>{aiGen.subject || aiSubject}</b> • Topic: <b>{aiGen.topic || aiTopic}</b>
-                </div>
-
-                <div style={{ fontSize: 12, opacity: 0.75 }}>
-                  Expected difficulty: <b>{normalizeDifficulty(aiDifficulty)}</b>
-                </div>
-
-                {aiPreview ? (
-                  <div style={{ display: "grid", gap: 8 }}>
-                    {aiPreview.map((p) => (
-                      <div
-                        key={p.i}
-                        style={{
-                          padding: 10,
-                          border: "1px solid rgba(0,0,0,0.08)",
-                          borderRadius: 12,
-                        }}
-                      >
-                        <div style={{ fontSize: 12, opacity: 0.75 }}>
-                          #{p.i + 1} • <b>{p.type}</b> • difficulty=<b>{p.difficulty ?? "—"}</b> • {p.subject} • {p.topic}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 13 }}>{p.question}</div>
-                      </div>
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <label style={{ display: "grid", gap: 4 }}>
+                  <span style={{ fontSize: 12, opacity: 0.75 }}>Subject</span>
+                  <select className="sel" value={aiSubject} onChange={(e) => setAiSubject(e.target.value)}>
+                    {SUBJECTS.map((s) => (
+                      <option key={s}>{s}</option>
                     ))}
+                  </select>
+                </label>
+
+                <label style={{ display: "grid", gap: 4 }}>
+                  <span style={{ fontSize: 12, opacity: 0.75 }}>Topic</span>
+                  <input className="sel" value={aiTopic} onChange={(e) => setAiTopic(e.target.value)} placeholder="Basics / Mixed / etc" />
+                </label>
+
+                <label style={{ display: "grid", gap: 4 }}>
+                  <span style={{ fontSize: 12, opacity: 0.75 }}>Count</span>
+                  <input className="sel" style={{ width: 120 }} value={aiCount} onChange={(e) => setAiCount(e.target.value)} inputMode="numeric" />
+                </label>
+
+                <label style={{ display: "grid", gap: 4 }}>
+                  <span style={{ fontSize: 12, opacity: 0.75 }}>Difficulty</span>
+                  <select className="sel" value={aiDifficulty} onChange={(e) => setAiDifficulty(e.target.value)}>
+                    <option value="easy">easy</option>
+                    <option value="medium">medium</option>
+                    <option value="hard">hard</option>
+                  </select>
+                </label>
+
+                <button className="primaryBtn" type="button" onClick={handleAIGenerate} disabled={aiGenLoading}>
+                  {aiGenLoading ? "Generating…" : "Generate AI Questions"}
+                </button>
+
+                <button
+                  className="segBtn"
+                  type="button"
+                  onClick={handleAIImport}
+                  disabled={aiImportLoading || !(Array.isArray(aiGen?.questions) && aiGen.questions.length)}
+                  title="Imports latest generated questions into DB"
+                >
+                  {aiImportLoading ? "Importing…" : "Import to DB"}
+                </button>
+              </div>
+
+              <div className="card" style={{ marginTop: 6 }}>
+                <div className="cardTitle">Latest AI response</div>
+
+                {aiGen && Array.isArray(aiGen?.questions) ? (
+                  <div style={{ display: "grid", gap: 10 }}>
+                    <div style={{ fontSize: 13, opacity: 0.9 }}>
+                      Returned: <b>{aiGen.questions.length}</b> questions • Subject: <b>{aiGen.subject || aiSubject}</b> • Topic: <b>{aiGen.topic || aiTopic}</b>
+                    </div>
+
+                    <div style={{ fontSize: 12, opacity: 0.75 }}>
+                      Expected difficulty: <b>{normalizeDifficulty(aiDifficulty)}</b>
+                    </div>
+
+                    {aiPreview ? (
+                      <div style={{ display: "grid", gap: 8 }}>
+                        {aiPreview.map((p) => (
+                          <div
+                            key={p.i}
+                            style={{
+                              padding: 10,
+                              border: "1px solid rgba(0,0,0,0.08)",
+                              borderRadius: 12,
+                            }}
+                          >
+                            <div style={{ fontSize: 12, opacity: 0.75 }}>
+                              #{p.i + 1} • <b>{p.type}</b> • difficulty=<b>{p.difficulty ?? "—"}</b> • {p.subject} • {p.topic}
+                            </div>
+                            <div style={{ marginTop: 6, fontSize: 13 }}>{p.question}</div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="naBox">No preview</div>
+                    )}
                   </div>
                 ) : (
-                  <div className="naBox">No preview</div>
+                  <div className="naBox">N/A</div>
                 )}
               </div>
-            ) : (
-              <div className="naBox">N/A</div>
-            )}
-          </div>
-        </div>
+            </div>
+          </>
+        )}
       </section>
 
       <hr className="sep" />
 
-      {/* HISTORY */}
       <section className="tile">
         <h2>History</h2>
 
@@ -490,8 +427,8 @@ export default function Dashboard({
                     <b>Score:</b> {h?.score ?? "—"} <span className="dot">•</span> <b>Accuracy:</b> {h?.accuracy ?? "—"}
                   </div>
                   <div className="histBottom">
-                    Total: {h?.totalQuestions ?? h?.totalquestions ?? "—"} <span className="dot">•</span>{" "}
-                    Time: {h?.created_at ? new Date(h.created_at).toISOString() : "—"}
+                    Total: {h?.totalQuestions ?? h?.totalquestions ?? "—"} <span className="dot">•</span> Time:{" "}
+                    {h?.created_at ? new Date(h.created_at).toISOString() : "—"}
                   </div>
                 </div>
               </div>
