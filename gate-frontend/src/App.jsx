@@ -1,32 +1,90 @@
+// FILE: ~/gate-frontend/src/App.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "./api.js";
 import { useAuthStore } from "./authStore.js";
 import Login from "./Login.jsx";
 import Dashboard from "./Dashboard.jsx";
 import Exam from "./Exam.jsx";
-import Review from "./Review.jsx";
 import "./dashboard.css";
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+/** Simple ErrorBoundary to avoid “white screen” */
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, info) {
+    // eslint-disable-next-line no-console
+    console.error("UI ErrorBoundary:", error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 18, fontFamily: "system-ui" }}>
+          <h2 style={{ margin: 0 }}>UI crashed</h2>
+          <p style={{ opacity: 0.8 }}>
+            This is a frontend render error (not backend). Check the console and fix the data shape.
+          </p>
+          <pre
+            style={{
+              background: "#f8fafc",
+              border: "1px solid #e5e7eb",
+              borderRadius: 12,
+              padding: 12,
+              overflow: "auto",
+              maxHeight: 260,
+            }}
+          >
+            {String(this.state.error?.message || this.state.error || "Unknown error")}
+          </pre>
+          <button
+            onClick={() => this.setState({ hasError: false, error: null })}
+            style={{
+              marginTop: 12,
+              padding: "10px 12px",
+              borderRadius: 12,
+              border: "1px solid rgba(0,0,0,0.2)",
+              background: "white",
+              cursor: "pointer",
+              fontWeight: 700,
+            }}
+          >
+            Try again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function normalizeHistoryResponse(data) {
+  // supports either:
+  // 1) array: [...]
+  // 2) { history: [...] }
+  // 3) { sessions: [...] }
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.history)) return data.history;
+  if (data && Array.isArray(data.sessions)) return data.sessions;
+  return [];
 }
 
 export default function App() {
+  const [blueprint, setBlueprint] = useState(null);
+
   const token = useAuthStore((s) => s.token);
   const email = useAuthStore((s) => s.email);
   const clearSession = useAuthStore((s) => s.clearSession);
 
-  const isAuthed = !!token;
-
   // UI screens
-  const [screen, setScreen] = useState("dashboard"); // "dashboard" | "exam" | "review"
+  const [screen, setScreen] = useState("dashboard"); // "dashboard" | "exam"
 
-  // dashboard data
+  // data
   const [history, setHistory] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
-
-  // blueprint
-  const [blueprint, setBlueprint] = useState(null);
 
   // exam state
   const [examQuestions, setExamQuestions] = useState([]);
@@ -38,18 +96,16 @@ export default function App() {
     blueprint: null,
   });
 
-  // Stage-9: start-main progress polling state
-  const [mainDifficulty, setMainDifficulty] = useState("medium"); // easy|medium|hard
+  // Main start
+  const [mainDifficulty, setMainDifficulty] = useState("medium");
   const [startingMain, setStartingMain] = useState(false);
-  const [startProgress, setStartProgress] = useState(null); // status payload from backend
 
-  // Stage-6B (AI Subject Generate)
+  // AI Subject Generate
   const [aiGen, setAiGen] = useState(null);
   const [aiGenLoading, setAiGenLoading] = useState(false);
   const [aiImportLoading, setAiImportLoading] = useState(false);
 
-  // Stage-10: review screen state
-  const [reviewTestId, setReviewTestId] = useState(null);
+  const isAuthed = !!token;
 
   // Load history whenever token changes
   useEffect(() => {
@@ -62,7 +118,7 @@ export default function App() {
       setLoadingHistory(true);
       try {
         const data = await apiFetch("/test/history", { token });
-        setHistory(Array.isArray(data) ? data : []);
+        setHistory(normalizeHistoryResponse(data));
       } catch {
         setHistory([]);
       } finally {
@@ -70,16 +126,6 @@ export default function App() {
       }
     })();
   }, [token]);
-
-  async function refreshHistory() {
-    if (!token) return;
-    try {
-      const data = await apiFetch("/test/history", { token });
-      setHistory(Array.isArray(data) ? data : []);
-    } catch {
-      // ignore
-    }
-  }
 
   const topBar = useMemo(() => {
     return (
@@ -106,12 +152,10 @@ export default function App() {
               <button
                 onClick={async () => {
                   try {
-                    // toggle OFF
                     if (blueprint !== null) {
                       setBlueprint(null);
                       return;
                     }
-                    // toggle ON (fetch)
                     const data = await apiFetch("/ai/blueprint?mode=main", { token });
                     setBlueprint(data);
                   } catch (e) {
@@ -145,7 +189,6 @@ export default function App() {
                     testId: null,
                     blueprint: null,
                   });
-                  setReviewTestId(null);
                 }}
                 style={{
                   padding: "7px 10px",
@@ -166,78 +209,58 @@ export default function App() {
     );
   }, [isAuthed, email, clearSession, token, blueprint]);
 
-  // =========================
-  // Stage-9: Start MAIN via jobId polling
-  // POST /api/test/start-main { difficulty } -> { jobId }
-  // Poll GET /api/test/start-main/status?jobId=... until done/error
-  // =========================
+  // Start MAIN
   async function onStartMain() {
     if (!token) return;
 
     setStartingMain(true);
-    setStartProgress({
-      status: "starting",
-      step: "Starting…",
-      percent: 0,
-    });
-
     try {
-      const start = await apiFetch("/test/start-main", {
+      const data = await apiFetch("/test/start-main", {
         token,
         method: "POST",
         body: { difficulty: mainDifficulty },
       });
 
-      const jobId = start?.jobId;
-      if (!jobId) {
-        throw new Error("Backend did not return jobId for start-main");
+      const qs = data?.questions || [];
+      if (!Array.isArray(qs) || qs.length === 0) {
+        const fallback = await apiFetch(`/test/generate?count=65&subjects=EC`, { token });
+        const fqs = fallback?.questions || [];
+        if (!fqs.length) throw new Error("No questions returned");
+        setExamQuestions(fqs);
+        setExamMeta({
+          mode: "main",
+          subject: "EC",
+          difficulty: mainDifficulty,
+          testId: null,
+          blueprint: null,
+        });
+        setScreen("exam");
+        return;
       }
 
-      // Poll status
-      while (true) {
-        const s = await apiFetch(`/test/start-main/status?jobId=${encodeURIComponent(jobId)}`, { token });
-
-        setStartProgress(s);
-
-        if (s?.status === "done") {
-          const result = s?.result;
-          const qs = result?.questions || [];
-          if (!Array.isArray(qs) || qs.length === 0) {
-            throw new Error("No questions returned in start-main result");
-          }
-
-          setExamQuestions(qs);
-          setExamMeta({
-            mode: "main",
-            subject: "EC",
-            difficulty: mainDifficulty,
-            testId: result?.testId ?? null,
-            blueprint: result?.blueprint ?? null,
-          });
-
-          setScreen("exam");
-          break;
-        }
-
-        if (s?.status === "error") {
-          throw new Error(s?.error || "start-main failed");
-        }
-
-        await sleep(800);
-      }
+      setExamQuestions(qs);
+      setExamMeta({
+        mode: "main",
+        subject: "EC",
+        difficulty: mainDifficulty,
+        testId: data?.testId ?? null,
+        blueprint: data?.blueprint ?? null,
+      });
+      setScreen("exam");
     } catch (e) {
       alert(e?.message || "Failed to start main test");
     } finally {
       setStartingMain(false);
-      setStartProgress(null);
     }
   }
 
-  // Subject-wise start (existing DB bank path)
+  // Start SUBJECT-WISE
   async function onStartSubject(subject) {
     try {
       const subj = subject || "EC";
-      const data = await apiFetch(`/test/generate?count=65&subjects=${encodeURIComponent(subj)}`, { token });
+      const data = await apiFetch(`/test/generate?count=65&subjects=${encodeURIComponent(subj)}`, {
+        token,
+      });
       const qs = data?.questions || [];
       if (!qs.length) throw new Error("No questions returned");
 
@@ -255,32 +278,31 @@ export default function App() {
     }
   }
 
-  // Exam Submit -> backend evaluator persists -> refresh history -> return to dashboard
-  async function onExamSubmit({ answers, totalQuestions }) {
+  async function onExamSubmit({ score, accuracy, answers, totalQuestions }) {
     try {
       await apiFetch("/test/submit", {
         token,
         method: "POST",
         body: {
+          score,
+          accuracy,
           answers,
           totalQuestions,
           mode: examMeta?.mode || "main",
           subject: examMeta?.subject || null,
-          remainingTime: 0,
           testId: examMeta?.testId ?? null,
         },
       });
 
-      await refreshHistory();
+      const data = await apiFetch("/test/history", { token });
+      setHistory(normalizeHistoryResponse(data));
       setScreen("dashboard");
     } catch (e) {
       alert(e?.message || "Submit failed");
     }
   }
 
-  // =========================
-  // Stage-6B: AI Subject Generate + Import
-  // =========================
+  // AI Subject Generate + Import
   async function onAIGenerateSubject({ subject, topic, count, difficulty }) {
     if (!token) throw new Error("Missing token");
     setAiGenLoading(true);
@@ -329,12 +351,6 @@ export default function App() {
     }
   }
 
-  // Stage-10: open review screen for a testId
-  async function onOpenReview(testId) {
-    setReviewTestId(testId);
-    setScreen("review");
-  }
-
   if (!isAuthed) {
     return (
       <div style={{ minHeight: "100vh", background: "white" }}>
@@ -345,66 +361,51 @@ export default function App() {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "white" }}>
-      {topBar}
+    <ErrorBoundary>
+      <div style={{ minHeight: "100vh", background: "white" }}>
+        {topBar}
 
-      {screen === "dashboard" && blueprint && (
-        <pre
-          style={{
-            margin: "12px 18px 0",
-            padding: 12,
-            background: "#f6f7f8",
-            borderRadius: 12,
-            border: "1px solid rgba(0,0,0,0.08)",
-            overflow: "auto",
-            maxHeight: 260,
-            fontSize: 12,
-          }}
-        >
-          {JSON.stringify(blueprint, null, 2)}
-        </pre>
-      )}
+        {screen === "dashboard" && blueprint && (
+          <pre
+            style={{
+              margin: "12px 18px 0",
+              padding: 12,
+              background: "#f6f7f8",
+              borderRadius: 12,
+              border: "1px solid rgba(0,0,0,0.08)",
+              overflow: "auto",
+              maxHeight: 260,
+              fontSize: 12,
+            }}
+          >
+            {JSON.stringify(blueprint, null, 2)}
+          </pre>
+        )}
 
-      {screen === "dashboard" ? (
-        <Dashboard
-          history={loadingHistory ? [] : history}
-          // Stage-9 start-main (job polling lives in App)
-          onStartMain={onStartMain}
-          mainDifficulty={mainDifficulty}
-          setMainDifficulty={setMainDifficulty}
-          startingMain={startingMain}
-          startProgress={startProgress}
-          // subject start
-          onStartSubject={onStartSubject}
-          // AI subject gen section (optional)
-          aiGen={aiGen}
-          aiGenLoading={aiGenLoading}
-          aiImportLoading={aiImportLoading}
-          onAIGenerateSubject={onAIGenerateSubject}
-          onAIImportGenerated={onAIImportGenerated}
-          // Stage-10 review action
-          onOpenReview={onOpenReview}
-          // Stage-10 fetch helpers
-          token={token}
-        />
-      ) : screen === "exam" ? (
-        <Exam
-          token={token}
-          questions={examQuestions}
-          meta={examMeta}
-          onBack={() => setScreen("dashboard")}
-          onSubmit={onExamSubmit}
-        />
-      ) : (
-        <Review
-          token={token}
-          testId={reviewTestId}
-          onBack={() => {
-            setScreen("dashboard");
-            setReviewTestId(null);
-          }}
-        />
-      )}
-    </div>
+        {screen === "dashboard" ? (
+          <Dashboard
+            history={loadingHistory ? [] : history}
+            onStartMain={onStartMain}
+            mainDifficulty={mainDifficulty}
+            setMainDifficulty={setMainDifficulty}
+            startingMain={startingMain}
+            onStartSubject={onStartSubject}
+            aiGen={aiGen}
+            aiGenLoading={aiGenLoading}
+            aiImportLoading={aiImportLoading}
+            onAIGenerateSubject={onAIGenerateSubject}
+            onAIImportGenerated={onAIImportGenerated}
+          />
+        ) : (
+          <Exam
+            token={token}
+            questions={examQuestions}
+            meta={examMeta}
+            onBack={() => setScreen("dashboard")}
+            onSubmit={onExamSubmit}
+          />
+        )}
+      </div>
+    </ErrorBoundary>
   );
 }

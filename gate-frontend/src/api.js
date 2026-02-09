@@ -1,3 +1,4 @@
+// FILE: ~/gate-frontend/src/api.js
 import { useAuthStore } from "./authStore.js";
 
 const API = import.meta.env.VITE_API_BASE || "/api";
@@ -21,9 +22,9 @@ export async function apiFetch(path, { token, method = "GET", body } = {}) {
   });
 
   const text = await res.text();
-
-  // Try JSON; if not JSON, keep raw text (helps debug HTML/error pages)
   let data = null;
+
+  // best-effort JSON parse
   try {
     data = text ? JSON.parse(text) : null;
   } catch {
@@ -35,13 +36,7 @@ export async function apiFetch(path, { token, method = "GET", body } = {}) {
   }
 
   if (!res.ok) {
-    const msg =
-      data?.error ||
-      data?.detail ||
-      (typeof data?.raw === "string" && data.raw.trim()
-        ? data.raw.slice(0, 250)
-        : `Request failed (${res.status})`);
-    throw new Error(msg);
+    throw new Error(data?.error || `Request failed (${res.status})`);
   }
 
   return data;
