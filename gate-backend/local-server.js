@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createJobs } from './paper-jobs.js';
-import { generateQuestions, generateWithLocal } from './aiProviders/local.js';
+import { generateQuestions, generateWithLocal, verifyLocalQuestion } from './aiProviders/local.js';
 
 // A separate, database-free companion for the shareable practice website.
 // Only this service is shared; Ollama stays on loopback.
@@ -34,7 +34,7 @@ app.use('/api/local', (req, res, next) => {
 });
 app.get('/api/local/reference', (_req,res)=>res.json(referenceInfo()||{coverage:'No private reference indexed.'}));
 let busy = false;
-const jobs = createJobs({ directory: path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'local-data'), generate:generateQuestions });
+const jobs = createJobs({ directory: path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'local-data'), generate:generateQuestions, verify:verifyLocalQuestion });
 app.get('/api/local/jobs', (_req,res) => res.json(jobs.list()));
 app.get('/api/local/jobs/:id', (req,res) => { const job=jobs.get(req.params.id); job?res.json(job):res.status(404).json({error:'Paper not found.'}); });
 app.post('/api/local/jobs/:id/resume', (req,res) => {

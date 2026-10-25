@@ -7,9 +7,9 @@ export function normalizeSet(raw) {
     if(q.diagram && !validDiagram(q.diagram)) throw new Error(`Question ${index + 1} has an unsupported circuit diagram.`);
     const type = String(q.type || 'MCQ').toUpperCase();
     const marks = Number(q.marks) === 2 ? 2 : 1;
-    if (!['MCQ','MSQ','NAT'].includes(type) || typeof q.question !== 'string' || !q.question.trim() || q.question.length > 12000) throw new Error(`Question ${index + 1} is invalid.`);
+    if (!['MCQ','MSQ','NAT'].includes(type) || typeof q.question !== 'string' || q.question.trim().length < 15 || q.question.length > 12000) throw new Error(`Question ${index + 1} is invalid.`);
     const options = type === 'NAT' ? null : Object.fromEntries(['A','B','C','D'].map((k,i) => [k, String(Array.isArray(q.options) ? q.options[i] ?? '' : q.options?.[k] ?? '').replace(/^[A-D][).]\s*/, '')]));
-    if (options && Object.values(options).some(v => !v.trim())) throw new Error(`Question ${index + 1} needs four options.`);
+    if (options && (Object.values(options).some(v => !v.trim() || v.trim()==='...') || new Set(Object.values(options).map(v=>v.trim().toLowerCase())).size!==4)) throw new Error(`Question ${index + 1} needs four options.`);
     let answer = q.answer;
     if (type === 'MCQ') {
       answer = String(answer).trim().toUpperCase();

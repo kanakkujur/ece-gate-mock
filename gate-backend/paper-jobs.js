@@ -15,7 +15,7 @@ export function paperPlan() {
   return plan;
 }
 
-export function createJobs({directory, generate}) {
+export function createJobs({directory, generate, verify}) {
   fs.mkdirSync(directory,{recursive:true});
   const jobs = new Map();
   for (const name of fs.readdirSync(directory).filter(n=>n.endsWith('.json'))) {
@@ -47,6 +47,7 @@ export function createJobs({directory, generate}) {
             if(!q || q.type!==slot.type) throw new Error('Model returned the wrong question type.');
             clean=normalizeSet({questions:[{...q,marks:slot.marks}]}).questions[0];
             if(job.questions.some(old=>old.question.trim().toLowerCase()===clean.question.trim().toLowerCase()&&JSON.stringify(old.diagram)===JSON.stringify(clean.diagram))) throw new Error('Duplicate question detected.');
+            if(!template && verify){const check=await verify(clean);if(check.valid!==true)throw new Error(`Local review rejected the answer: ${check.reason || "Inconsistent solution"}`);clean.aiReview=check.reason;}
             break;
           } catch(error) {clean=null;if(retry===2)throw new Error(`${error.message} Resume to retry question ${job.questions.length+1}.`);}
         }

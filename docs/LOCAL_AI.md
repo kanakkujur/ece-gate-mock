@@ -17,7 +17,7 @@ On another computer copy `.env.example` to `.env` and replace its placeholder ke
   are a practice blueprint, not a prediction of the official distribution.
 - Single subject: choose Subject practice, a subject, and 65 questions. This also
   totals 100 marks. Shorter practice sets are available.
-- Generation saves each question on the host. After a restart use Recover the
+- Generation runs a second local AI consistency check and saves each accepted question on the host. This check is not a mathematical guarantee. After a restart use Recover the
   latest host generation job, then Resume generation. Completed papers can be
   saved to the browser library or exported for your brother to import.
 - Wrong MCQ answers lose one third of their marks. MSQ/NAT have no negative marks.

@@ -8,13 +8,13 @@ test('scores MCQ penalties, all-or-nothing MSQ, NAT tolerance and skipped questi
   assert.equal(result.items[4].score,0);
 });
 test('incorrect MSQ has no partial or negative marks; numeric zero is attempted',()=>{
-  const set=normalizeSet({questions:[{type:'MSQ',marks:2,question:'Universal gates?',options:{A:'NAND',B:'NOR',C:'AND',D:'OR'},answer:['A','B']},{type:'NAT',marks:1,question:'Zero?',answer:0}]});
+  const set=normalizeSet({questions:[{type:'MSQ',marks:2,question:'Universal gates?',options:{A:'NAND',B:'NOR',C:'AND',D:'OR'},answer:['A','B']},{type:'NAT',marks:1,question:'Enter the value zero as a number.',answer:0}]});
   const r=scoreSet(set,{0:['A'],1:'0'});assert.equal(r.score,1);assert.equal(r.attempted,2);
 });
 test('rejects broken model or imported papers and normalizes option arrays',()=>{
   assert.throws(()=>normalizeSet({questions:[]}));
-  assert.throws(()=>normalizeSet({questions:[{type:'NAT',question:'x',answer:null}]}));
-  assert.throws(()=>normalizeSet({questions:[{type:'MCQ',question:'x',answer:'E',options:{A:'a',B:'b',C:'c',D:'d'}}]}));
-  const set=normalizeSet({questions:[{type:'MCQ',question:'x',marks:2,options:['A) a','B) b','C) c','D) d'],answer:'b',neg_marks:0}]});
+  assert.throws(()=>normalizeSet({questions:[{type:'NAT',question:'Find the specified numerical quantity.',answer:null}]}));
+  assert.throws(()=>normalizeSet({questions:[{type:'MCQ',question:'Find the specified numerical quantity.',answer:'E',options:{A:'a',B:'b',C:'c',D:'d'}}]}));
+  const set=normalizeSet({questions:[{type:'MCQ',question:'Find the specified numerical quantity.',marks:2,options:['A) a','B) b','C) c','D) d'],answer:'b',neg_marks:0}]});
   assert.equal(set.questions[0].options.A,'a');assert.equal(set.questions[0].neg_marks,2/3);
 });
