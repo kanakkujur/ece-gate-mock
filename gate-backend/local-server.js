@@ -41,6 +41,11 @@ app.post('/api/local/jobs/:id/resume', (req,res) => {
   if (busy || jobs.busy) return res.status(429).json({error:'The model is busy.'});
   try { res.json(jobs.resume(req.params.id)); } catch(error) {res.status(400).json({error:error.message});}
 });
+for(const action of ['pause','stop','restart']) {
+  app.post(`/api/local/jobs/:id/${action}`, (req,res)=>{
+    try {res.json(jobs[action](req.params.id));}catch(error){res.status(400).json({error:error.message});}
+  });
+}
 app.post('/api/local/generate', (req,res) => {
   if (busy || jobs.busy) return res.status(429).json({error:'The model is busy. Try again shortly.'});
   const {full=false,subject='Networks',topic='Mixed fundamentals',count=5,difficulty='medium'}=req.body;

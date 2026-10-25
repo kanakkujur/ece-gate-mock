@@ -87,3 +87,7 @@ and reference coverage when the private index is present.
 Mixed Engineering Mathematics papers use 13 formula-based families with varied numeric givens, calculated keys and worked solutions. These are fundamentals practice variants. Specific unsupported topics continue to use the local AI. Supported circuit templates are also calculated directly.
 
 Model-dependent questions still use sequential generation and local review on the same GPU. Each candidate is checked for duplicate stems before review. Superscripts, caret powers and appended options are normalized so the same question across MCQ/MSQ/NAT is rejected. Earlier full question text is no longer copied into retry prompts. Fresh random seeds vary attempts. The progress card reports calculated questions, model calls, duplicate rejections and generation/review time. Figures include rejected attempts and are not a prediction of remaining time.
+
+## Generation controls
+
+While a paper is generating, Pause generation and Stop generation cancel the active inference request. Both keep completed questions on the host. Pause marks the job as paused; Stop ends the active run and marks it stopped. Resume generation continues from the last accepted question in either case. Already completed papers need no cancellation. Formula-based papers may finish before a pause action is needed.

@@ -47,3 +47,21 @@ test('mixed mathematics paper completes without model calls or duplicate stems',
     assert.equal(job.metrics.templateQuestions,65);assert.equal(job.metrics.duplicatesRejected,0);
   }finally{fs.rmSync(directory,{recursive:true,force:true});}
 });
+for(const action of ['pause','stop'])test(`${action} cancels inference, keeps saved questions and supports resume`,async()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'gate-control-'));let block=true,activeSignal;
+  const generate=async({typeMix,signal})=>{
+    const type=Object.keys(typeMix).find(k=>typeMix[k]);
+    if(type==='MSQ'&&block){activeSignal=signal;await new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(new Error('Cancelled')),{once:true}));}
+    return {questions:[{type,marks:1,question:`A complete generated ${type} question about system properties.`,options:{A:'linear',B:'time invariant',C:'nonlinear',D:'time varying'},answer:type==='MSQ'?['A','B']:'A',solution:'This worked solution derives the correct properties.'}]};
+  };
+  try {
+    const manager=createJobs({directory,generate});
+    const job=manager.create({full:false,subject:'Control Systems',topic:'Mixed',difficulty:'easy',count:2});
+    await wait(()=>!!activeSignal);const first=JSON.stringify(job.questions[0]);
+    manager[action](job.id);await wait(()=>!manager.busy);
+    assert.equal(activeSignal.aborted,true);assert.equal(job.status,action==='pause'?'paused':'stopped');assert.equal(job.questions.length,1);
+    const saved=JSON.parse(fs.readFileSync(path.join(directory,`${job.id}.json`)));assert.equal(saved.status,job.status);
+    block=false;manager.resume(job.id);await wait(()=>!manager.busy);
+    assert.equal(job.status,'done');assert.equal(job.questions.length,2);assert.equal(JSON.stringify(job.questions[0]),first);
+  }finally{fs.rmSync(directory,{recursive:true,force:true});}
+});
