@@ -10,3 +10,10 @@ build
 .vite
 .DS_Store
 
+
+# Local papers and private answer keys
+gate-backend/local-data/
+
+# User-supplied private reference material
+references/*
+!references/README.md

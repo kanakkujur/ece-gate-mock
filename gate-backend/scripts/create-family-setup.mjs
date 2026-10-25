@@ -1,0 +1,13 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+import dotenv from 'dotenv';
+import {privateSetupLink,FAMILY_WEBSITE} from '../../gate-frontend/src/family-setup.js';
+const backend=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const config=dotenv.parse(fs.readFileSync(path.join(backend,'.env')));
+const link=privateSetupLink(config.LOCAL_ACCESS_KEY);
+const directory=path.join(backend,'local-data');fs.mkdirSync(directory,{recursive:true});
+fs.writeFileSync(path.join(directory,'FAMILY_SETUP_LINK.txt'),`PRIVATE FAMILY SETUP LINK\n\n${link}\n\nSend this link privately to your brother. Open it once to save the connection automatically. Later visits can use ${FAMILY_WEBSITE}\nThe link contains the family access credential. Keep it out of public posts and GitHub.\n`);
+fs.writeFileSync(path.join(directory,'FAMILY_SETUP.html'),`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Private GATE Studio setup</title><style>body{margin:0;background:#f4f7ee;color:#264934;font:16px/1.7 system-ui;display:grid;place-items:center;min-height:100vh}main{max-width:480px;background:white;border:1px solid #dce6d1;border-radius:18px;padding:35px;margin:20px}h1{font-size:30px;line-height:1.3}a{display:inline-block;background:#28533d;color:white;padding:14px 20px;border-radius:9px;text-decoration:none;margin:15px 0}small{display:block;color:#849078}</style></head><body><main><h1>Welcome to GATE Studio.</h1><p>Open the website using this private setup button. Your family connection saves automatically on this browser.</p><a href="${link}" rel="noreferrer">Connect & open GATE Studio →</a><p>Next time, open the normal GitHub website. You will not need to enter the key again.</p><small>Keep this setup file private. Your host computer must be online for new AI questions; saved papers work offline.</small></main></body></html>`);
+fs.writeFileSync(path.join(directory,'FAMILY_CONNECTION.txt'),`Website: ${FAMILY_WEBSITE}\n\nEasiest setup: send FAMILY_SETUP.html or the private link in FAMILY_SETUP_LINK.txt to your brother. He opens it once; the key saves automatically.\n\nKeep these setup files private. They contain the family access credential. Regular visits use the normal website link. Browser data clearing or a different browser requires setup again.\n`);
+console.log('Private family setup files created in gate-backend/local-data. No key was published.');

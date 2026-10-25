@@ -2,12 +2,12 @@
 
 import OpenAI from "openai";
 
-const apiKey = process.env.OPENAI_API_KEY;
-if (!apiKey) {
-  throw new Error("OPENAI_API_KEY is missing. Put it in .env or set env var.");
+// Initialize only when explicitly requested, so local mode needs no paid API key.
+function getClient() {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error("OPENAI_API_KEY is required only for the OpenAI provider.");
+  return new OpenAI({ apiKey });
 }
-
-const client = new OpenAI({ apiKey });
 
 // Pick model from env or default
 const MODEL = process.env.OPENAI_MODEL || "gpt-4.1";
@@ -165,7 +165,7 @@ Constraints:
 `.trim();
 
   // Send to OpenAI Responses API
-  const response = await client.responses.create({
+  const response = await getClient().responses.create({
     model: MODEL,
     input: prompt,
   });

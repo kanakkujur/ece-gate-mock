@@ -50,7 +50,7 @@ const PASSWORD_COLUMN = ALLOWED_PASSWORD_COLUMNS.has(PASSWORD_COLUMN_RAW)
   ? PASSWORD_COLUMN_RAW
   : "password_hash";
 
-const DEFAULT_AI_PROVIDER = (process.env.AI_PROVIDER || "openai").toLowerCase(); // auto|openai|local
+const DEFAULT_AI_PROVIDER = (process.env.AI_PROVIDER || "local").toLowerCase(); // auto|openai|local
 const AI_CACHE_TTL_MS = parseInt(process.env.AI_CACHE_TTL_MS || "", 10) || 24 * 60 * 60 * 1000; // 24h
 
 /* -------------------------
@@ -267,11 +267,7 @@ async function runProvider(provider, payload) {
   if (provider === "local") return await generateLocalQuestions(payload);
 
   if (provider === "auto") {
-    try {
-      return await generateOpenAIQuestions(payload);
-    } catch {
-      return await generateLocalQuestions(payload);
-    }
+    return await generateLocalQuestions(payload);
   }
   throw new Error("provider must be openai|local|auto");
 }
@@ -887,7 +883,7 @@ app.post("/api/ai/generate", authMiddleware, async (req, res) => {
       provider,
       mode,
       body: req.body,
-      model: process.env.OPENAI_MODEL || process.env.LOCAL_LLM_MODEL || "",
+      model: provider === "openai" ? process.env.OPENAI_MODEL : process.env.LOCAL_LLM_MODEL,
     });
 
     const cached = cacheGet(cacheKey);
