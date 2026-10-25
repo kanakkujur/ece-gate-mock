@@ -1,5 +1,5 @@
-const CACHE='gate-studio-f164045521ae';
-const FILES=["./","index.html","assets/index-BJ9w0Hph.js","assets/index-Bu4XD4sY.css"];
+const CACHE='gate-studio-8a834f03b09d';
+const FILES=["./","index.html","assets/index-BSQjeeZZ.css","assets/index-jgeJfHtP.js"];
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(FILES)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('gate-studio-')&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
 self.addEventListener('fetch',event=>{
