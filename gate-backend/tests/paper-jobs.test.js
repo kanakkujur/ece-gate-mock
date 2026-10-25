@@ -22,3 +22,18 @@ test('generation checkpoints survive a failed call and process restart; subject 
     assert.ok(restored.questions.every(q=>q.subject==='Control Systems'));assert.equal(restored.questions.reduce((s,q)=>s+q.marks,0),100);
   } finally {fs.rmSync(directory,{recursive:true,force:true});}
 });
+test('a rejected single-answer MSQ retries with feedback without losing the first question',async()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'gate-msq-'));let msqCalls=0;
+  const generate=async({typeMix,feedback})=>{
+    const type=Object.keys(typeMix).find(k=>typeMix[k]);
+    if(type==='MSQ') {msqCalls++;if(msqCalls===2)assert.match(feedback,/at least two correct choices/);}
+    return {questions:[{type,marks:1,question:type==='MSQ'?'Which two system properties are true?':'Choose the correct system property.',options:{A:'Linear',B:'Time invariant',C:'Nonlinear',D:'Time varying'},answer:type==='MSQ'?(msqCalls===1?['A']:['A','B']):'A',solution:'A complete solution establishes the correct options.'}]};
+  };
+  try {
+    const manager=createJobs({directory,generate});
+    const job=manager.create({full:false,subject:'Control Systems',topic:'Basics',difficulty:'easy',count:2});
+    await wait(()=>job.status==='done'||job.status==='paused');
+    assert.equal(job.status,'done');assert.equal(job.questions.length,2);
+    assert.equal(job.questions[0].type,'MCQ');assert.deepEqual(job.questions[1].answer,['A','B']);assert.equal(msqCalls,2);
+  } finally {fs.rmSync(directory,{recursive:true,force:true});}
+});
