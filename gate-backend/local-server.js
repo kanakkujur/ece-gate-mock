@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createJobs } from './paper-jobs.js';
+import { createGoogleRouter } from './google-server.js';
 import { generateQuestions, generateWithLocal, verifyLocalQuestion } from './aiProviders/local.js';
 
 // A separate, database-free companion for the shareable practice website.
@@ -14,6 +15,12 @@ const app = express();
 const key = process.env.LOCAL_ACCESS_KEY;
 const allowed = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173,https://kanakkujur.github.io').split(',').map(s => s.trim());
 app.use('/api/local', cors({ origin(origin, done) { done(null, !origin || allowed.includes(origin)); } }));
+app.use('/api/local/google', express.json({limit:'8mb'}), createGoogleRouter({
+  clientId:process.env.GOOGLE_CLIENT_ID,clientSecret:process.env.GOOGLE_CLIENT_SECRET,
+  emails:(process.env.GOOGLE_ALLOWED_EMAILS||'').split(','),
+  origins:[...new Set([...allowed,'http://127.0.0.1:4001','http://localhost:4001'])],
+  sharedData:()=>({kind:'gate-paper-library',version:1,papers:jobs.list().filter(j=>j.status==='done'&&j.questions?.length===j.plan?.length),key})
+}));
 app.use(express.json({ limit: '100kb' }));
 app.get('/api/local/health', async (_req, res) => {
   try {

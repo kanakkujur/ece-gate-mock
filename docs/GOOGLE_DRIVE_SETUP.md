@@ -1,83 +1,30 @@
-# Google sign-in and Drive setup for GATE Studio
+# Private server Google Drive setup
 
-The owner's Drive folder is already created:
+Google Drive API and Google Picker API are enabled in project `gate-studio` (number `37816807595`). The website OAuth client is created for `https://kanakkujur.github.io` and `http://127.0.0.1:4001`.
 
-https://drive.google.com/drive/folders/1n2ahSJrqpC1zLMd792zDYFY0iWkEl_cZ
+The app now uses Google's authorization-code popup model. Google client secrets and access/refresh tokens stay on the host. No Picker API key is created, requested or published. The public OAuth client ID identifies the application and is not a secret. The browser receives a temporary app session to authorize requests to the host, never a Google token.
 
-It contains Setup, Papers and Results. The private setup HTML, family-connection.json,
-shared-paper-library.json and Mathematics paper have been uploaded. Do not make the
-folder public: the setup files contain the family access credential.
+## Finish the host setup
 
-## One-time owner registration
+1. In Google Auth Platform > Clients > GATE Studio website, obtain the client secret privately. If Google no longer offers the original secret, the account owner must create a replacement secret. Do not paste it into chat or commit it to GitHub.
+2. Store these settings in `gate-backend/.env`:
 
-The Google Drive connection in Codex belongs to Codex. The website needs its own
-Google app registration; connector tokens cannot be reused as website sign-in.
+   ```env
+   GOOGLE_CLIENT_ID=37816807595-89m574va0vdlatnnrvsnlc1br90d6d67.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=your-private-client-secret
+   GOOGLE_ALLOWED_EMAILS=your-google-email,brothers-google-email
+   ```
+3. In Google Auth Platform > Audience, keep Testing and add the same learner emails as test users. The host allowlist is enforced separately after Google verifies the account. Sharing the Drive folder alone does not add a test user or allowlist entry.
+4. Restart GATE Studio, visit the permanent website > Profiles & Drive, and sign in. Each user consents to app-file access in their own Drive. Real Google sign-in and cloud restore must be verified after the private secret is configured.
 
-1. Open Google Cloud Console with the account that will own this app. Create or
-   select a project. If Google asks for terms or account setup, complete that yourself.
-2. Enable Google Drive API and Google Picker API for this project.
-3. Configure Google Auth Platform branding and audience for GATE Studio. For a
-   private testing app, add your and your brother's Google emails as test users.
-4. Create an OAuth client of type Web application. Authorize JavaScript origins:
-   - `https://kanakkujur.github.io`
-   - `http://127.0.0.1:4001` if you also want Google sign-in on the local website
-   - Any explicitly used development origin, separately, during testing.
-5. Create a browser API key for Google Picker. Restrict it to the Picker and Drive
-   APIs and website referrers `https://kanakkujur.github.io/*` and
-   `https://docs.google.com/*` (Google Picker uses a docs.google.com iframe).
-6. Put the public OAuth client ID, restricted browser API key and Google project
-   number into `gate-frontend/public/google-app.json`, then rebuild and publish.
-   The website uses the popup token model. No client secret or service-account
-   credential belongs in this file or in the website.
+## How it works
 
-The public config shape is:
+- Google returns a one-use authorization code to the browser. The host exchanges it with the private client secret, checking a single-use state bound to the registered origin.
+- The browser holds only a temporary GATE Studio session in memory. Host sessions expire after 12 hours and disappear on restart. Google refresh tokens are only in host memory. A restart requires signing in again.
+- The host operator is trusted with each connected learner's tokens and synced progress. Local profiles are offline workspaces, not protected local accounts.
+- The host supplies completed papers from its own saved library and the family connection to signed-in, allowlisted learners. It does not automatically read arbitrary files from GATE_STUDIO in Drive. Existing Drive JSON papers still support download and manual import.
+- Backups use the narrow drive.file scope and are stored in each learner's own GATE_STUDIO_MY_PROGRESS folder, one file per device. Restore merges completed attempts and preserves existing unfinished work.
+- Google sign-in, Drive backup/restore and shared host papers require the host and internet. Saved tests and local scoring remain offline-capable.
+- No Google Picker SDK or browser API key remains in this implementation. Do not configure a Picker key for this flow.
 
-```json
-{
-  "clientId": "YOUR_WEB_CLIENT_ID.apps.googleusercontent.com",
-  "apiKey": "YOUR_RESTRICTED_BROWSER_PICKER_KEY",
-  "projectNumber": "YOUR_GOOGLE_CLOUD_PROJECT_NUMBER",
-  "sharedFolderUrl": "https://drive.google.com/drive/folders/1n2ahSJrqpC1zLMd792zDYFY0iWkEl_cZ"
-}
-```
-
-Until those values are configured, Profiles & Drive clearly shows that Google
-sign-in needs owner setup. Local profiles, offline exams and private setup links
-work without this registration. No Google sign-in has been live-verified yet.
-
-## First visit for each learner
-
-1. Share the GATE_STUDIO folder privately with the learner's Google email.
-2. Open the permanent website and go to Profiles & Drive.
-3. Sign in with Google and grant access to selected app files.
-4. Choose family-connection.json and shared-paper-library.json in Google's Picker.
-   With the narrow drive.file permission, a file created outside the website must
-   be explicitly selected before the website can read it. Folder access alone is
-   not treated as a grant to read every file inside it.
-5. The family key and papers save on the device. Selected file IDs are remembered
-   for later sign-ins. The private setup link is also available as an alternative.
-
-Google OAuth access tokens stay in memory and expire. The user may need to click
-Reconnect/Sign in again to use Drive in a later session. This does not erase the
-saved family key or local work. We do not persist refresh tokens or access tokens.
-
-## Profiles and backups
-
-- Each local or Google profile has separate history and unfinished attempts.
-- Existing work stays in the original Local profile. Copy existing local results
-  here is explicit and never deletes the original records.
-- The question-paper library is shared on the device for family practice.
-- Each Google account's private progress is stored in GATE_STUDIO_MY_PROGRESS in
-  that account's Drive, using one backup file per device to avoid overwrites.
-- Submitted results back up automatically while the matching Google Drive session
-  is connected, unless disabled. Back up now also includes the saved unfinished test.
-- Restore merges result IDs, ignores another profile's snapshots and preserves an
-  existing unfinished local attempt. Family keys are excluded from progress backups.
-- Local profiles are offline workspaces, not password-protected accounts. Google
-  permissions control cloud-file access. The local AI still runs on the host PC.
-
-## Google references
-
-- https://developers.google.com/identity/oauth2/web/guides/use-token-model
-- https://developers.google.com/workspace/drive/picker/guides/web-picker
-- https://developers.google.com/workspace/drive/api/guides/api-specific-auth
+Reference: https://developers.google.com/identity/oauth2/web/guides/use-code-model

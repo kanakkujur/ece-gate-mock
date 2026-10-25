@@ -6,7 +6,7 @@ export function sharedDriveData(data) {
     if(typeof data.key!=='string'||!data.key.trim()||data.key.length>512||/[\u0000-\u001f]/.test(data.key))throw new Error('Invalid family connection file.');
     return {key:data.key.trim(),papers:[]};
   }
-  if(data?.kind==='gate-paper-library'&&Array.isArray(data.papers))return {papers:data.papers.map(normalizeSet)};
+  if(data?.kind==='gate-paper-library'&&Array.isArray(data.papers))return {...(data.key?sharedDriveData({kind:'gate-family-connection',version:1,key:data.key}):{}),papers:data.papers.map(normalizeSet)};
   if(Array.isArray(data?.questions))return {papers:[normalizeSet(data)]};
   throw new Error('Choose a GATE Studio connection file, paper library, or question paper.');
 }
