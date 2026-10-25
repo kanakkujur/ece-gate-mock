@@ -1,0 +1,15 @@
+import React, {useId} from 'react';
+import {validDiagram} from './circuits.js';
+function Resistor({x,y,label,vertical=false}){return <g transform={`translate(${x},${y}) ${vertical?'rotate(90)':''}`}><path d="M0 0h12l5 -7 8 14 8 -14 8 14 8 -14 5 7h16"/><text transform={vertical?'translate(41,-22) rotate(-90)':''} x={vertical?0:35} y={vertical?0:-18} textAnchor="middle">{label}</text></g>;}
+function Ground({x,y}){return <g transform={`translate(${x},${y})`}><path d="M0 0v9M-13 9h26M-9 15h18M-5 21h10"/></g>;}
+export default function CircuitDiagram({diagram:d}) {
+  const id=useId();if(!validDiagram(d))return null;
+  const k=v=>`${v/1000} kΩ`;
+  const source=<><circle cx="65" cy="145" r="24"/><path d="M65 121V75H150M65 169v51h355"/><text x="65" y="140" textAnchor="middle">+</text><text x="65" y="159" textAnchor="middle">−</text><text x="24" y="145" textAnchor="middle">{d.voltage} V</text></>;
+  return <figure className="circuit-figure"><svg viewBox="0 0 490 280" role="img" aria-labelledby={`${id}-title ${id}-desc`}><title id={`${id}-title`}>{d.kind.replaceAll('-',' ')} circuit</title><desc id={`${id}-desc`}>R1 {d.r1} ohms, R2 {d.r2} ohms{d.kind==='inverting-opamp'?', ideal op-amp with grounded non-inverting input':`, voltage source ${d.voltage} volts`}. Values match the question and answer key.</desc><g fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round">
+    {d.kind==='series'&&<>{source}<Resistor x={150} y={75} label={`R₁ = ${k(d.r1)}`}/><path d="M220 75h45"/><Resistor x={265} y={75} label={`R₂ = ${k(d.r2)}`}/><path d="M335 75h85v145"/><Ground x={65} y={220}/></>}
+    {d.kind==='parallel'&&<>{source}<path d="M150 75h270v35m-180 -35v35m0 70v40m180 -40v40"/><Resistor x={240} y={110} vertical label={`R₁ = ${k(d.r1)}`}/><Resistor x={420} y={110} vertical label={`R₂ = ${k(d.r2)}`}/><circle cx="240" cy="75" r="2.5" fill="currentColor"/><circle cx="240" cy="220" r="2.5" fill="currentColor"/><Ground x={65} y={220}/></>}
+    {d.kind==='voltage-divider'&&<>{source}<Resistor x={150} y={75} label={`R₁ = ${k(d.r1)}`}/><path d="M220 75h80v35m0 70v40m0 -145h120"/><Resistor x={300} y={110} vertical label={`R₂ = ${k(d.r2)}`}/><circle cx="300" cy="75" r="3" fill="currentColor"/><circle cx="420" cy="75" r="4" fill="#f7f9f2"/><text x="436" y="80">Vout</text><Ground x={65} y={220}/></>}
+    {d.kind==='inverting-opamp'&&<><path d="M35 145h75m70 0h65m0 -34v100l95 -50zM340 161h95M220 145V65h25m70 0h75v96M245 181h-30v55"/><Resistor x={110} y={145} label={`Rin = ${k(d.r1)}`}/><Resistor x={245} y={65} label={`Rf = ${k(d.r2)}`}/><text x="35" y="130">Vin</text><text x="405" y="145">Vout</text><text x="257" y="150">−</text><text x="257" y="188">+</text><circle cx="220" cy="145" r="2.5" fill="currentColor"/><circle cx="390" cy="161" r="2.5" fill="currentColor"/><Ground x={215} y={236}/><text x="300" y="220" textAnchor="middle">Ideal op-amp</text></>}
+  </g></svg><figcaption>Renders offline · Values tied to the answer key{d.kind==='inverting-opamp'?' · Supply rails omitted':''}</figcaption></figure>;
+}

@@ -384,7 +384,6 @@ export default function App() {
     setAiGenLoading(true);
     try {
       const payload = {
-        provider: "openai",
         mode: "subject",
         subject,
         topic,
