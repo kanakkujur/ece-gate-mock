@@ -10,9 +10,8 @@ $null=Invoke-RestMethod 'http://127.0.0.1:4001/api/local/health' -TimeoutSec 5
 function Publish-CurrentCompanion {
     & node (Join-Path $PSScriptRoot 'gate-backend\scripts\publish-companion.mjs')
     if($LASTEXITCODE -ne 0){throw 'Could not update the permanent website host pointer.'}
-    $privateEnv=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'gate-backend\.env') -Raw
-    $privateKey=[regex]::Match($privateEnv,'(?m)^LOCAL_ACCESS_KEY=(.+)$').Groups[1].Value.Trim()
-    @("Website: https://kanakkujur.github.io/ece-gate-mock/", "Host address: automatic; leave Automatic host connection enabled.", "Family access key: $privateKey", '', 'Share this file privately. Your PC must be on for live AI. Saved papers work offline.') | Set-Content -LiteralPath (Join-Path $logRoot 'FAMILY_CONNECTION.txt')
+    & node (Join-Path $PSScriptRoot 'gate-backend\scripts\create-family-setup.mjs')
+    if($LASTEXITCODE -ne 0){throw 'Could not create private family setup files.'}
 }
 $processFile=Join-Path $logRoot 'tunnel-process.txt'
 $urlFile=Join-Path $logRoot 'companion-url.txt'

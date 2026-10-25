@@ -1,3 +1,4 @@
+import {privateSetupLink} from './family-setup.js';
 import {buildStatistics} from './statistics.js';
 import Statistics, {ProgressSummary} from './Statistics.jsx';
 import {createCompanionResolver} from './companion.js';
@@ -13,7 +14,7 @@ const clock = n => `${Math.floor(n/3600).toString().padStart(2,'0')}:${Math.floo
 const answerText = a => Array.isArray(a)?a.join(', '):String(a ?? '');
 function download(name,data) {const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'})); const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 
-export default function Studio() {
+export default function Studio({setupNotice={}}) {
   const [sets,setSets]=useState(()=>read('sets',[STARTER,CIRCUIT_STARTER]));
   const [history,setHistory]=useState(()=>read('history',[]));
   const [attempt,setAttempt]=useState(()=>read('attempt',null));
@@ -23,8 +24,8 @@ export default function Studio() {
   const [settingsOpen,setSettingsOpen]=useState(false);
   const [offline,setOffline]=useState(!navigator.onLine);
   const [cached,setCached]=useState(false);
-  const [message,setMessage]=useState('');
-  const [error,setError]=useState('');
+  const [message,setMessage]=useState(setupNotice.message||'');
+  const [error,setError]=useState(setupNotice.error||'');
   const [form,setForm]=useState({kind:'mixed',subject:'Networks',topic:'Mixed fundamentals',difficulty:'medium',count:65});
   const [job,setJob]=useState(()=>read('job',null));
   const [generating,setGenerating]=useState(false);
@@ -48,10 +49,28 @@ export default function Studio() {
     const base=await resolveCompanion.current(settings,location.hostname);
     if(base && !/^https?:\/\//.test(base)) throw new Error('Enter an http:// or https:// companion address.');
     if(location.protocol==='https:' && base.startsWith('http:')) throw new Error('Use an HTTPS companion address when visiting the hosted website.');
-    const r=await fetch(`${base}/api/local${path}`,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','X-Access-Key':settings.key},...(body?{body:JSON.stringify(body)}:{})});
+    const r=await fetch(`${base}/api/local${path}`,{signal:AbortSignal.timeout(path==='/explain'?600000:15000),method:body?'POST':'GET',headers:{'Content-Type':'application/json','X-Access-Key':settings.key},...(body?{body:JSON.stringify(body)}:{})});
     const text=await r.text();let data;try{data=JSON.parse(text);}catch{throw new Error('Companion not found. Check the address and start the local service.');}
     if(!r.ok)throw new Error(data.error || 'Local AI request failed.');return data;
   };
+  useEffect(()=>{
+    if(!settings.key)return;
+    let inactive=false;
+    setConnection('checking');
+    (async()=>{try{
+      const reference=await api('/reference');const health=await api('/health');
+      if(!inactive){setReference(reference);setConnection(health.online?'online':'offline');if(setupNotice.message)setMessage(health.online?'Family connection saved on this device. Local AI is connected.':'Family connection saved. The host is offline; your saved papers still work.');}
+    }catch{if(!inactive){setConnection('offline');if(setupNotice.message)setMessage('Family connection saved. The host is currently unreachable; reconnect when it is online.');}}})();
+    return()=>{inactive=true;};
+  },[]);
+  function exportFamilySetup(){
+    try {
+      const link=privateSetupLink(settings.key);
+      const url=URL.createObjectURL(new Blob([`PRIVATE FAMILY SETUP LINK\n\n${link}\n\nOpen this link once to save the family connection automatically. Keep this link private.\n`],{type:'text/plain'}));
+      const a=document.createElement('a');a.href=url;a.download='GATE-STUDIO-PRIVATE-SETUP.txt';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+      setMessage('Private setup link downloaded. Share it privately with your brother; he opens it once.');
+    }catch(e){setError(e.message);}
+  }
   async function checkConnection(){setConnection('checking');try{const health=await api('/health');if(!health.online)throw new Error('Start Ollama on the host computer.');setConnection('online');setReference(await api('/reference'));setMessage('Local DeepSeek is ready. Saved papers also work without it.');}catch(e){setConnection('offline');setError(e.message);}}
   useEffect(()=>{const on=()=>setOffline(false),off=()=>setOffline(true);window.addEventListener('online',on);window.addEventListener('offline',off);if('serviceWorker' in navigator){navigator.serviceWorker.ready.then(()=>setCached(!!navigator.serviceWorker.controller));const change=()=>setCached(!!navigator.serviceWorker.controller);navigator.serviceWorker.addEventListener('controllerchange',change);return()=>{window.removeEventListener('online',on);window.removeEventListener('offline',off);navigator.serviceWorker.removeEventListener('controllerchange',change);};}return()=>{window.removeEventListener('online',on);window.removeEventListener('offline',off);};},[]);
   // Practice time counts only while this attempt is open. Exam time uses a persisted deadline.
@@ -119,7 +138,7 @@ export default function Studio() {
     <aside className="sidebar"><a className="brand" href="#" onClick={e=>{e.preventDefault();setView('dashboard');}}><span className="brand-mark">G<span>↗</span></span><span>GATE<span className="brand-light">studio</span><small>ECE PRACTICE SPACE</small></span></a>
       <div className="nav-label">YOUR WORKSPACE</div><nav>{navigation.map(([id,icon,label])=><button key={id} className={view===id?'nav-item active':'nav-item'} onClick={()=>setView(id)}><span>{icon}</span>{label}{id==='papers'&&<b>{sets.length}</b>}</button>)}</nav>
       <div className="sidebar-note"><span className="tiny-orbit">◎</span><strong>Your pace.<br/>Your next breakthrough.</strong><p>One thoughtful attempt at a time.</p><button onClick={()=>setView('create')}>Build your next paper ↗</button></div>
-      <button className="connection-card" onClick={()=>setSettingsOpen(true)}><span className={`status-dot ${connection==='online'?'live':''}`}/><span>Local AI companion<small>{connection==='online'?'Connected · DeepSeek R1':'Connection settings'}</small></span><span>↗</span></button>
+      <button className="connection-card" onClick={()=>setSettingsOpen(true)}><span className={`status-dot ${connection==='online'?'live':''}`}/><span>Local AI companion<small>{connection==='online'?'Connected · DeepSeek R1':connection==='checking'?'Reconnecting…':settings.key?'Host unavailable · key saved':'Connection settings'}</small></span><span>↗</span></button>
       <div className="profile"><span>{(settings.name||'L').slice(0,1).toUpperCase()}</span><div>{settings.name||'Learner'}<small>ECE aspirant</small></div><button aria-label="Edit profile and connection" onClick={()=>setSettingsOpen(true)}>⚙</button></div>
     </aside>
     <main className="workspace"><header className="topbar"><span>My workspace <span className="breadcrumb">/ {navigation.find(n=>n[0]===view)?.[2]||'Practice session'}</span></span><div className="top-actions"><span className="offline-label"><i/>{offline?'Offline · answers stay here':cached?'Offline-ready':'Saved on this device'}</span><button className="icon-button" aria-label="Connection settings" onClick={()=>setSettingsOpen(true)}>⚙</button></div></header>
@@ -147,7 +166,7 @@ export default function Studio() {
     </main>
     <input type="file" accept=".json,application/json" ref={file} hidden onChange={importFile}/>
     {confirmation&&<div className="modal-shade"><section className="settings-modal panel" role="dialog" aria-modal="true" aria-label="Confirm action"><h2>Before you continue</h2><p>{confirmation.message}</p><div className="toolbar"><button className="secondary" onClick={()=>setConfirmation(null)}>Go back</button><button className="primary" onClick={()=>{const action=confirmation.action;setConfirmation(null);action();}}>Confirm</button></div></section></div>}
-    {settingsOpen&&<div className="modal-shade" onClick={()=>setSettingsOpen(false)}><section className="settings-modal panel" role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={e=>e.stopPropagation()}><div className="section-title"><h2 id="settings-title">Your local companion</h2><button className="icon-button" onClick={()=>setSettingsOpen(false)} aria-label="Close settings">×</button></div><p>Generate and explain with DeepSeek on the host computer. Saved tests and scores work even when it is off.</p><label>Your name<input value={settings.name} onChange={e=>setSettings({...settings,name:e.target.value})}/></label><label><span>Automatic host connection</span><input type="checkbox" checked={settings.auto!==false} onChange={e=>setSettings({...settings,auto:e.target.checked})}/> Find the current host through the permanent GitHub link</label><label>Companion address (manual override)<input disabled={settings.auto!==false} placeholder="Leave blank on the host, or https://your-host.ts.net" value={settings.url} onChange={e=>setSettings({...settings,url:e.target.value})}/></label><label>Family access key<input type="password" autoComplete="off" value={settings.key} onChange={e=>setSettings({...settings,key:e.target.value})}/></label><p className="muted">{reference?.coverage||'Private reference: the host can use indexed PDF passages. Test the connection to see coverage.'}</p><p className="muted">Find the key in gate-backend/.env on the host. Share the key privately with your brother. The GitHub website finds the current host address automatically. The key stays on this device and is sent only to the companion address.</p><div className="toolbar"><button className="primary" onClick={()=>{try{save('connection',settings);setSettingsOpen(false);setMessage('Connection settings saved.');}catch(e){setError(e.message);}}}>Save settings</button><button className="secondary" onClick={checkConnection}>{connection==='checking'?'Checking…':'Test connection'}</button></div><p className="muted">Offline use requires opening the built website online once, until “Offline-ready” appears. Keep the same browser; clearing site data removes saved attempts. Export backups for safekeeping.</p></section></div>}
+    {settingsOpen&&<div className="modal-shade" onClick={()=>setSettingsOpen(false)}><section className="settings-modal panel" role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={e=>e.stopPropagation()}><div className="section-title"><h2 id="settings-title">Your local companion</h2><button className="icon-button" onClick={()=>setSettingsOpen(false)} aria-label="Close settings">×</button></div><p>Generate and explain with DeepSeek on the host computer. Saved tests and scores work even when it is off.</p><label>Your name<input value={settings.name} onChange={e=>setSettings({...settings,name:e.target.value})}/></label><label><span>Automatic host connection</span><input type="checkbox" checked={settings.auto!==false} onChange={e=>setSettings({...settings,auto:e.target.checked})}/> Find the current host through the permanent GitHub link</label><label>Companion address (manual override)<input disabled={settings.auto!==false} placeholder="Leave blank on the host, or https://your-host.ts.net" value={settings.url} onChange={e=>setSettings({...settings,url:e.target.value})}/></label><label>Family access key<input type="password" autoComplete="off" value={settings.key} onChange={e=>setSettings({...settings,key:e.target.value})}/></label><p className="muted">{reference?.coverage||'Private reference: the host can use indexed PDF passages. Test the connection to see coverage.'}</p><p className="muted">Find the key in gate-backend/.env on the host. Share the key privately with your brother. The GitHub website finds the current host address automatically. The key stays on this device and is sent only to the companion address.</p><div className="toolbar"><button className="primary" onClick={()=>{try{save('connection',settings);setSettingsOpen(false);setMessage('Connection settings saved.');void checkConnection();}catch(e){setError(e.message);}}}>Save settings</button><button className="secondary" onClick={checkConnection}>{connection==='checking'?'Checking…':'Test connection'}</button><button className="secondary" disabled={!settings.key.trim()} onClick={exportFamilySetup}>Download private setup link</button></div><p className="muted">The key is saved on this browser and reconnects automatically. Your brother can open a private setup link once instead of typing it. A different browser or clearing site data requires setup again.</p><p className="muted">Offline use requires opening the built website online once, until “Offline-ready” appears. Keep the same browser; clearing site data removes saved attempts. Export backups for safekeeping.</p></section></div>}
   </div>;
 }
 function PageTitle({eyebrow,title,text}){return <div className="page-heading"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{text}</p></div></div>;}

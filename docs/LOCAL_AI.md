@@ -109,3 +109,9 @@ Open Statistics in the sidebar or View statistics on Overview. Completed attempt
 Average and best score use percentages of each paper's maximum marks, rather than mixing raw marks from short sets and 100-mark mocks. Accuracy is total correct divided by total attempted questions; skipped answers do not inflate or reduce accuracy, but they lower the score percentage. Subject breakdowns include subject questions inside full mocks. Negative marks, skipped questions, recent scores and the last twenty score points are shown. Select a history row or chart point to review an attempt.
 
 Filter by paper type, subject (for subject tests), learner, date period, difficulty and timing mode. Results imported from another device are included and can be separated by learner. The statistics work offline and do not call the AI. This browser's stored data is the source; there is no automatic cross-device synchronization.
+
+## Automatic family-key setup
+
+Send gate-backend/local-data/FAMILY_SETUP.html privately to your brother, or send the private URL contained in FAMILY_SETUP_LINK.txt. He opens it once. The website stores the family key in that browser, enables automatic host lookup, removes the setup fragment from the address bar, and reconnects on future visits. The normal GitHub website link can then be used without entering the key again. Existing manually saved keys also reconnect automatically.
+
+Connection settings includes Download private setup link for making the same invitation from a configured browser. The setup files contain the family credential and remain ignored by Git; companion.json contains only the public host address. share-local-ai.ps1 refreshes the private setup files as part of host setup. A different browser, private browsing, or cleared site data requires opening the private setup link again. Test results remain separate from connection settings.
