@@ -6,3 +6,5 @@
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
 
 .circuit-figure{margin:18px 0 28px;padding:10px;background:#f7f9f2;border:1px solid #e4e9db;border-radius:10px}.circuit-figure svg{width:100%;max-height:300px;color:#355442}.circuit-figure svg text{fill:currentColor;stroke:none;font:12px sans-serif}.circuit-figure figcaption{text-align:center;font-size:9px;color:#93a087;padding-bottom:8px}
+
+.topic-target{display:flex;align-items:center;justify-content:space-between;gap:15px;margin:12px 0;font-size:12px}.topic-target>span{overflow-wrap:anywhere}

@@ -22,13 +22,14 @@ export async function generateWithLocal(prompt, format = "json") {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal: AbortSignal.timeout(Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 600000),
-      body: JSON.stringify({ model, prompt, stream: false, format, options: { temperature: 0.3 } }),
+      body: JSON.stringify({ model, prompt, stream: false, format, options: { temperature: 0.3, num_predict: 1536, repeat_penalty: 1.1 } }),
     });
   } catch (error) {
     throw new Error(`Local model unavailable at ${base}. Run start-local-ai.ps1 first. ${error.message}`);
   }
   if (!r.ok) throw new Error(`Local model failed (${r.status}): ${(await r.text()).slice(0, 300)}`);
   const data = await r.json();
+  if (data.done_reason === "length") throw new Error("Local model reached its output limit. Resume generation to retry with a fresh question.");
   if (!data.response) throw new Error(data.error || "Local model returned an empty response.");
   return data.response;
 }

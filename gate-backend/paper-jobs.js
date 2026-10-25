@@ -38,9 +38,11 @@ export function createJobs({directory, generate, verify}) {
         const avoid=job.questions.filter(q=>q.subject===slot.subject).map(q=>q.question).join(' | ').slice(-3000);
         const template=(job.full || job.questions.length%4===0) ? circuitQuestion({...slot,index:job.questions.length}) : null;
         let clean;
+        let acceptedTopic=job.topic;
         const themes=slot.subject==='General Aptitude'?['percentage changes','ratios and mixtures','work and time','conditional probability','logical deductions','number sequences','English grammar','short reading comprehension','averages','data interpretation with a table in text']:slot.subject==='Engineering Mathematics'?['eigenvalues','definite integrals','first order differential equations','complex numbers','probability distributions','matrix rank','partial derivatives','Laplace transforms']:['fundamental laws','numerical analysis','system behaviour','limiting cases','design constraints','frequency response','transient response'];
         const subIndex=job.questions.filter(q=>q.subject===slot.subject).length;
         for(let retry=0;retry<3;retry++) {
+          acceptedTopic=themes[(subIndex+retry)%themes.length];
           const batch=template ? {questions:[template]} : await generate({subject:slot.subject,topic:`${job.topic}. Focus: ${themes[(subIndex+retry)%themes.length]}. Original problem number ${subIndex+1}, variant ${retry+1}. Do not repeat these earlier problems: ${avoid || 'none yet'}`,difficulty:job.difficulty,count:1,typeMix:{MCQ:0,MSQ:0,NAT:0,[slot.type]:1},marks:slot.marks});
           const q=batch.questions?.[0];
           try {
@@ -51,7 +53,7 @@ export function createJobs({directory, generate, verify}) {
             break;
           } catch(error) {clean=null;if(retry===2)throw new Error(`${error.message} Resume to retry question ${job.questions.length+1}.`);}
         }
-        job.questions.push({...clean,subject:slot.subject,section:slot.subject==='General Aptitude'?'GA':'EC',id:job.questions.length});
+        job.questions.push({...clean,topic:template?clean.topic:acceptedTopic,subject:slot.subject,section:slot.subject==='General Aptitude'?'GA':'EC',id:job.questions.length});
         save(job);
       }
       job.status='done';save(job);
