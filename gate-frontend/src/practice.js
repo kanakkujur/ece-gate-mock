@@ -20,7 +20,8 @@ export function normalizeSet(raw) {
     } else if (answer === null || String(answer).trim() === '' || !Number.isFinite(Number(answer))) throw new Error(`Question ${index + 1} needs a numeric answer.`);
     return { ...q, id: index, type, marks, options, answer, question:q.question.trim(), solution:String(q.solution || q.explanation || ''), neg_marks:type === 'MCQ' ? marks/3 : 0 };
   });
-  return { id: raw.id || crypto.randomUUID(), title:String(raw.title || `${raw.subject || 'Imported'} practice`), subject:String(raw.subject || 'Mixed ECE'), topic:String(raw.topic || 'Mixed'), difficulty:raw.difficulty || 'medium', source:raw.source || 'Imported set', createdAt:raw.createdAt || new Date().toISOString(), questions };
+  const paperMode=raw.paperMode|| (raw.full===true?'full':raw.full===false?'subject':undefined);
+  return { ...(paperMode?{paperMode}:{}), id: raw.id || crypto.randomUUID(), title:String(raw.title || `${raw.subject || 'Imported'} practice`), subject:String(raw.subject || 'Mixed ECE'), topic:String(raw.topic || 'Mixed'), difficulty:raw.difficulty || 'medium', source:raw.source || 'Imported set', createdAt:raw.createdAt || new Date().toISOString(), questions };
 }
 
 export function scoreSet(set, answers) {

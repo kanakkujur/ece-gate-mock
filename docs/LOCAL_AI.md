@@ -101,3 +101,11 @@ Full ECE and 65-question single-subject practice papers use 35 MCQ, 18 MSQ and 1
 Always share https://kanakkujur.github.io/ece-gate-mock/. The temporary Cloudflare address is now a connection detail resolved automatically from the repository's public companion.json pointer. share-local-ai.ps1 reuses an existing tunnel or starts a new one, then publishes only its HTTPS address through the already signed-in GitHub CLI. The family key remains private. START_GATE_STUDIO.cmd also runs this sharing setup when online. In website Connection settings leave Automatic host connection enabled; your brother enters the family key once. An optional manual override remains available.
 
 GitHub Pages hosts the static website; inference still runs on the host computer. If the host is off, saved papers remain usable offline. Publishing a changed pointer requires GitHub CLI access to this repository. No new domain, account or paid hosting service is required on this configured computer.
+
+## Score statistics
+
+Open Statistics in the sidebar or View statistics on Overview. Completed attempts are split into Full ECE mocks, Subject tests, and Mixed practice/warm-ups. Saved papers and unfinished attempts do not count. Explicit paper-mode metadata is preserved in new exports; older results are classified using their subject and question count.
+
+Average and best score use percentages of each paper's maximum marks, rather than mixing raw marks from short sets and 100-mark mocks. Accuracy is total correct divided by total attempted questions; skipped answers do not inflate or reduce accuracy, but they lower the score percentage. Subject breakdowns include subject questions inside full mocks. Negative marks, skipped questions, recent scores and the last twenty score points are shown. Select a history row or chart point to review an attempt.
+
+Filter by paper type, subject (for subject tests), learner, date period, difficulty and timing mode. Results imported from another device are included and can be separated by learner. The statistics work offline and do not call the AI. This browser's stored data is the source; there is no automatic cross-device synchronization.
