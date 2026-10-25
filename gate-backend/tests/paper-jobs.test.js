@@ -54,6 +54,9 @@ test('mixed mathematics paper completes without model calls or duplicate stems',
     await wait(()=>job.status!=='running');
     assert.equal(job.status,'done');assert.equal(job.questions.length,65);assert.equal(calls,0);
     assert.equal(job.metrics.templateQuestions,65);assert.equal(job.metrics.duplicatesRejected,0);
+    fs.writeFileSync(path.join(directory,'zzzz-export.json'),JSON.stringify({...job,questions:[],status:'paused'}));
+    const restored=createJobs({directory,generate:async()=>{throw new Error('Unexpected inference');}}).get(job.id);
+    assert.equal(restored.status,'done');assert.equal(restored.questions.length,65);
   }finally{fs.rmSync(directory,{recursive:true,force:true});}
 });
 for(const action of ['pause','stop'])test(`${action} cancels inference, keeps saved questions and supports resume`,async()=>{

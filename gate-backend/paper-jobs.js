@@ -38,7 +38,7 @@ export function createJobs({directory, generate, verify}) {
   const jobs = new Map();
   for (const name of fs.readdirSync(directory).filter(n=>n.endsWith('.json'))) {
     const job=JSON.parse(fs.readFileSync(path.join(directory,name),'utf8'));
-    if(!Array.isArray(job.plan)||typeof job.id!=='string')continue;
+    if(!Array.isArray(job.plan)||typeof job.id!=='string'||name!==`${job.id}.json`)continue;
     if (job.status==='running') {job.status='paused';job.error='Host restarted. Resume to continue from the last saved question.';}
     jobs.set(job.id,job);
   }
