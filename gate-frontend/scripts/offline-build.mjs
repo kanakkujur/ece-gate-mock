@@ -17,3 +17,5 @@ self.addEventListener('fetch',event=>{
 `);
 fs.writeFileSync(path.join(root,'.nojekyll'),'');
 console.log('Offline app shell prepared.');
+
+if(process.env.VITE_LOCAL_API_URL){fs.writeFileSync(path.join(root,"companion.json"),JSON.stringify({url:process.env.VITE_LOCAL_API_URL,updatedAt:new Date().toISOString()},null,2)+"\n");}

@@ -6,6 +6,22 @@ import crypto from 'node:crypto';
 import { circuitQuestion } from '../gate-frontend/src/circuits.js';
 import { normalizeSet } from '../gate-frontend/src/practice.js';
 
+export function balanceQuestionTypes(plan) {
+  if(plan.length!==65)return plan;
+  const balanced=plan.map(slot=>({...slot,type:'MCQ'}));
+  for(const marks of [1,2]) {
+    let remaining=balanced.flatMap((slot,index)=>slot.marks===marks&&slot.subject!=='General Aptitude'?[index]:[]);
+    // Aptitude-only single-subject practice still uses the requested practice mix.
+    if(!remaining.length)remaining=balanced.flatMap((slot,index)=>slot.marks===marks?[index]:[]);
+    for(const [type,count] of [['NAT',6],['MSQ',9]]) {
+      const chosen=new Set(Array.from({length:count},(_,i)=>remaining[Math.floor((i+0.5)*remaining.length/count)]));
+      for(const index of chosen)balanced[index].type=type;
+      remaining=remaining.filter(index=>!chosen.has(index));
+    }
+  }
+  return balanced;
+}
+
 export function paperPlan() {
   const plan = [];
   const add = (subject, ones, twos) => {
@@ -14,7 +30,7 @@ export function paperPlan() {
   add('General Aptitude',5,5);
   add('Engineering Mathematics',3,5);
   for (const [subject,ones,twos] of [['Networks',3,3],['Signals & Systems',3,3],['Electronic Devices',3,3],['Analog Circuits',3,3],['Digital Circuits',3,3],['Control Systems',3,3],['Communication Systems',2,4],['Electromagnetics',2,3]]) add(subject,ones,twos);
-  return plan;
+  return balanceQuestionTypes(plan);
 }
 
 export function createJobs({directory, generate, verify}) {
@@ -94,7 +110,7 @@ export function createJobs({directory, generate, verify}) {
       const job=jobs.get(id);if(!job)throw new Error('Paper not found.');
       const backupDirectory=path.join(directory,'backups');fs.mkdirSync(backupDirectory,{recursive:true});
       const backupName=`${id}-${Date.now()}.json`;fs.writeFileSync(path.join(backupDirectory,backupName),JSON.stringify(job));
-      job.recovery={backup:backupName,replacedQuestions:job.questions.length};job.questions=[];delete job.metrics;
+      job.recovery={backup:backupName,replacedQuestions:job.questions.length};job.questions=[];job.plan=balanceQuestionTypes(job.plan);delete job.metrics;
       void run(job);return job;
     },
     get busy(){return running;},
@@ -102,7 +118,7 @@ export function createJobs({directory, generate, verify}) {
     get(id){return jobs.get(id);},
     create({full,subject,topic,difficulty,count}) {
       if(running) throw new Error('Another paper is generating.');
-      const plan=full?paperPlan():Array.from({length:count},(_,i)=>({subject,marks:count===65?(i<30?1:2):(i%2?2:1),type:['MCQ','MSQ','NAT'][i%3]}));
+      const plan=full?paperPlan():balanceQuestionTypes(Array.from({length:count},(_,i)=>({subject,marks:count===65?(i<30?1:2):(i%2?2:1),type:['MCQ','MSQ','NAT'][i%3]})));
       const job={id:crypto.randomUUID(),title:full?'GATE ECE · Full mock paper':`${subject} · ${topic}`,subject:full?'Mixed ECE':subject,topic,difficulty,full,source:'Local DeepSeek + verified circuit templates · Review AI answer keys',createdAt:new Date().toISOString(),status:'queued',questions:[],plan};
       jobs.set(job.id,job);save(job);void run(job);return job;
     },

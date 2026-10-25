@@ -91,3 +91,13 @@ Model-dependent questions still use sequential generation and local review on th
 ## Generation controls
 
 While a paper is generating, Pause generation and Stop generation cancel the active inference request. Both keep completed questions on the host. Pause marks the job as paused; Stop ends the active run and marks it stopped. Resume generation continues from the last accepted question in either case. Already completed papers need no cancellation. Formula-based papers may finish before a pause action is needed.
+
+## Requested 65-question type mix
+
+Full ECE and 65-question single-subject practice papers use 35 MCQ, 18 MSQ and 12 NAT. The 12 NAT comprise six 1-mark and six 2-mark questions. The full ECE paper retains 10 General Aptitude questions and 100 total marks. This is a selected practice mix; the official GATE pattern does not fix the NAT count at twelve. Shorter sets keep their existing type rotation.
+
+## Permanent sharing link
+
+Always share https://kanakkujur.github.io/ece-gate-mock/. The temporary Cloudflare address is now a connection detail resolved automatically from the repository's public companion.json pointer. share-local-ai.ps1 reuses an existing tunnel or starts a new one, then publishes only its HTTPS address through the already signed-in GitHub CLI. The family key remains private. START_GATE_STUDIO.cmd also runs this sharing setup when online. In website Connection settings leave Automatic host connection enabled; your brother enters the family key once. An optional manual override remains available.
+
+GitHub Pages hosts the static website; inference still runs on the host computer. If the host is off, saved papers remain usable offline. Publishing a changed pointer requires GitHub CLI access to this repository. No new domain, account or paid hosting service is required on this configured computer.

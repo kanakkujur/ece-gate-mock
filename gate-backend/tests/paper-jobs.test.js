@@ -3,13 +3,22 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {createJobs,paperPlan} from '../paper-jobs.js';
+import {createJobs,paperPlan,balanceQuestionTypes} from '../paper-jobs.js';
 const wait=async(predicate)=>{for(let i=0;i<100;i++){if(predicate())return;await new Promise(r=>setTimeout(r,5));}throw new Error('Job timed out');};
 test('mixed blueprint has 65 questions, 100 marks, 15 aptitude and 13 mathematics marks',()=>{
   const p=paperPlan();assert.equal(p.length,65);assert.equal(p.reduce((s,q)=>s+q.marks,0),100);
   assert.equal(p.filter(q=>q.subject==='General Aptitude').length,10);
   assert.equal(p.filter(q=>q.subject==='General Aptitude').reduce((s,q)=>s+q.marks,0),15);
   assert.equal(p.filter(q=>q.subject==='Engineering Mathematics').reduce((s,q)=>s+q.marks,0),13);
+});
+test('full and single-subject papers use 12 NAT questions split evenly across marks',()=>{
+  const single=balanceQuestionTypes(Array.from({length:65},(_,i)=>({subject:'Engineering Mathematics',marks:i<30?1:2})));
+  for(const plan of [paperPlan(),single]) {
+    assert.equal(plan.filter(q=>q.type==='NAT'&&q.marks===1).length,6);
+    assert.equal(plan.filter(q=>q.type==='NAT'&&q.marks===2).length,6);
+    assert.equal(plan.filter(q=>q.type==='MCQ').length,35);assert.equal(plan.filter(q=>q.type==='MSQ').length,18);
+    assert.equal(plan.reduce((sum,q)=>sum+q.marks,0),100);
+  }
 });
 test('generation checkpoints survive a failed call and process restart; subject paper is 65/100',async()=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'gate-jobs-'));let calls=0;
