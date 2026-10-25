@@ -13,7 +13,7 @@ function tryParseJson(text) {
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
-export async function generateWithLocal(prompt, format = "json") {
+export async function generateWithLocal(prompt, format = "json", options = {}) {
   const base = (process.env.LOCAL_LLM_URL || "http://127.0.0.1:11434").replace(/\/$/, "");
   const model = process.env.LOCAL_LLM_MODEL || "deepseek-r1:7b";
   let r;
@@ -22,7 +22,7 @@ export async function generateWithLocal(prompt, format = "json") {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal: AbortSignal.timeout(Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 600000),
-      body: JSON.stringify({ model, prompt, stream: false, format, options: { temperature: 0.3, num_predict: 1536, repeat_penalty: 1.1 } }),
+      body: JSON.stringify({ model, prompt, stream: false, format, options: { temperature: 0.3, num_predict: 1536, repeat_penalty: 1.1, ...options } }),
     });
   } catch (error) {
     throw new Error(`Local model unavailable at ${base}. Run start-local-ai.ps1 first. ${error.message}`);
@@ -37,6 +37,7 @@ export async function generateWithLocal(prompt, format = "json") {
 export async function generateQuestions({
   marks,
   feedback = "",
+  seed,
   section = "EC",
   mode = "subject",
   subject = "Networks",
@@ -86,7 +87,7 @@ Use original wording and values rather than copying a reference question.
     }
   }));
   const schema = {type:"object",required:["questions"],properties:{questions:{type:"array",minItems:n,maxItems:n,items:variants.length===1?variants[0]:{anyOf:variants}}}};
-  const text = await generateWithLocal(prompt, schema);
+  const text = await generateWithLocal(prompt, schema, {seed,temperature:0.55});
   const json = tryParseJson(text);
 
   if (!Array.isArray(json.questions) || json.questions.length !== n) throw new Error("Model returned an incomplete question set. Try a smaller batch.");

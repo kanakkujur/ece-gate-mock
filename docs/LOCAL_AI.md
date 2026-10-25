@@ -81,3 +81,9 @@ build output belongs there. Never include .env, local-data or private references
 Run npm test in gate-frontend and npm run test:local in gate-backend. Checks cover
 scoring, circuit calculations, 65/100 blueprints, interrupted generation recovery
 and reference coverage when the private index is present.
+
+## Faster generation and duplicate prevention
+
+Mixed Engineering Mathematics papers use 13 formula-based families with varied numeric givens, calculated keys and worked solutions. These are fundamentals practice variants. Specific unsupported topics continue to use the local AI. Supported circuit templates are also calculated directly.
+
+Model-dependent questions still use sequential generation and local review on the same GPU. Each candidate is checked for duplicate stems before review. Superscripts, caret powers and appended options are normalized so the same question across MCQ/MSQ/NAT is rejected. Earlier full question text is no longer copied into retry prompts. Fresh random seeds vary attempts. The progress card reports calculated questions, model calls, duplicate rejections and generation/review time. Figures include rejected attempts and are not a prediction of remaining time.

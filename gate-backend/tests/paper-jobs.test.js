@@ -37,3 +37,13 @@ test('a rejected single-answer MSQ retries with feedback without losing the firs
     assert.equal(job.questions[0].type,'MCQ');assert.deepEqual(job.questions[1].answer,['A','B']);assert.equal(msqCalls,2);
   } finally {fs.rmSync(directory,{recursive:true,force:true});}
 });
+test('mixed mathematics paper completes without model calls or duplicate stems',async()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'gate-math-'));let calls=0;
+  try {
+    const manager=createJobs({directory,generate:async()=>{calls++;throw new Error('Unexpected inference');}});
+    const job=manager.create({full:false,subject:'Engineering Mathematics',topic:'Mixed fundamentals',difficulty:'medium',count:65});
+    await wait(()=>job.status!=='running');
+    assert.equal(job.status,'done');assert.equal(job.questions.length,65);assert.equal(calls,0);
+    assert.equal(job.metrics.templateQuestions,65);assert.equal(job.metrics.duplicatesRejected,0);
+  }finally{fs.rmSync(directory,{recursive:true,force:true});}
+});
